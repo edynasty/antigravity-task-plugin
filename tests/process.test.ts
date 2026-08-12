@@ -232,7 +232,7 @@ describe("runAgy timeout, abort and cleanup", () => {
 
   test("abort racing close: abort after clean completion is a no-op", async () => {
     const controller = new AbortController();
-    const { options, pidPath } = await makeSpawnOptions({ scenario: "record", signal: controller.signal });
+    const { options } = await makeSpawnOptions({ scenario: "record", signal: controller.signal });
     const result = await runAgy(options);
     controller.abort();
     expect(result.exitCode).toBe(0);
