@@ -2,7 +2,7 @@
  * Opt-in live smoke harness for the antigravity-task-plugin (Todo 7).
  *
  * Replaces tests/live-skip.ts. Gated by ANTIGRAVITY_SMOKE=1 captured at
- * process start: any other value (unset, "0", "true", "") skips with exit 0
+ * process start: another value (unset, "0", "true", "") skips with exit 0
  * BEFORE any executable discovery, spawn, or temp evidence. CI never sets
  * this flag, so CI runs are deterministic and quota-free.
  *
@@ -28,7 +28,6 @@ import { redactCredentials } from "../src/redaction.js";
 import { HOST_GRACE_MS } from "../src/process-types.js";
 
 const SMOKE_ENV_VAR = "ANTIGRAVITY_SMOKE";
-const AGY_PATH_ENV = "AGY_PATH";
 const SMOKE_ENABLED = process.env[SMOKE_ENV_VAR] === "1";
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const EVIDENCE_DIR = join(REPO_ROOT, ".omo", "evidence");
