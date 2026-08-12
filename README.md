@@ -86,6 +86,96 @@ The plugin registers exactly one tool: `antigravity-task`.
 | `continueConversation` | `boolean` | (optional) | Resume the most recent conversation. Mutually exclusive with `conversationId`. |
 | `sandbox` | `boolean` | (optional) | Restrict the run's terminal/shell access only. |
 
+## Example calls
+
+The `antigravity-task` tool is invoked by OpenCode's LLM agent. Below are example tool-call payloads showing common usage patterns.
+
+### Default execute mode (may modify workspace)
+
+**⚠️ WARNING: Default `mode=execute` maps to `--mode accept-edits` and MAY modify files in the current worktree.**
+
+```json
+{
+  "tool": "antigravity-task",
+  "args": {
+    "task": "Add error handling to the user authentication flow"
+  }
+}
+```
+
+This uses the default `mode=execute`, which allows agy to make changes to your workspace. Review the output before committing.
+
+### Explicit plan mode (no workspace modifications)
+
+```json
+{
+  "tool": "antigravity-task",
+  "args": {
+    "task": "Analyze the database schema and suggest optimizations",
+    "mode": "plan"
+  }
+}
+```
+
+Plan mode requests planning without applying edits. Note: plan mode does not guarantee filesystem immutability; agy may still read files and reference workspace state in its output.
+
+### With custom timeout and model
+
+```json
+{
+  "tool": "antigravity-task",
+  "args": {
+    "task": "Refactor the payment processing module",
+    "mode": "plan",
+    "timeoutSeconds": 600,
+    "model": "claude-3-5-sonnet"
+  }
+}
+```
+
+### Continuation examples
+
+Resume a specific conversation by ID:
+
+```json
+{
+  "tool": "antigravity-task",
+  "args": {
+    "task": "Continue implementing the remaining test cases",
+    "conversationId": "conv_abc123xyz"
+  }
+}
+```
+
+Or resume the most recent conversation:
+
+```json
+{
+  "tool": "antigravity-task",
+  "args": {
+    "task": "Fix the linting errors you found",
+    "continueConversation": true
+  }
+}
+```
+
+**Note:** `conversationId` and `continueConversation` are mutually exclusive. Setting both returns an error.
+
+### With sandbox restriction
+
+```json
+{
+  "tool": "antigravity-task",
+  "args": {
+    "task": "Run the test suite and report failures",
+    "mode": "execute",
+    "sandbox": true
+  }
+}
+```
+
+Sandbox restricts only terminal/shell access. It does NOT prevent filesystem writes.
+
 ## Manual omo tool and permission examples
 
 The plugin registers the `antigravity-task` tool. You can manually configure omo policies to control its usage. These are user-managed examples; the plugin never auto-writes permission policies.

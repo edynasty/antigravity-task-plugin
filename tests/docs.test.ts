@@ -26,6 +26,7 @@ describe("README required sections", () => {
     const requiredHeadings = [
       "Installation",
       "Tool arguments",
+      "Example calls",
       "Execute vs plan mode",
       "Sandbox",
       "AGY_PATH",
@@ -80,6 +81,15 @@ describe("README required sections", () => {
     const readme = await readReadme();
     expect(readme).toMatch(/OAuth|piggyback|credential.*sharing/i);
     expect(readme).not.toMatch(/we (do not |don't )?(accept|assume|take) (any )?(legal|ToS|liability)/i);
+  });
+
+  test("Example calls section contains tool invocations with execute and plan modes", async () => {
+    const readme = await readReadme();
+    expect(readme).toContain("## Example calls");
+    expect(readme).toContain('"tool": "antigravity-task"');
+    expect(readme).toMatch(/"mode":\s*"execute"/);
+    expect(readme).toMatch(/"mode":\s*"plan"/);
+    expect(readme).toMatch(/WARNING.*execute.*may modify|execute.*MAY modify/i);
   });
 });
 
