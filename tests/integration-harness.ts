@@ -32,20 +32,22 @@
   * (documented limitation, no paid-model invocation).
  */
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   buildIsolatedOpenCodeEnv,
-  checkPluginLoadProof,
   formatHashLine,
+  generateProbeNonce,
   hashFileOrAbsent,
   loadPluginFactory,
   packOutputFilename,
+  systemTmpDir,
   withoutProbeEnv,
   writeOpenCodeConfig,
 } from "./helpers/integration-harness";
+import { checkPluginLoadProof } from "./helpers/load-proof";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const PACKED_ENTRY = join("package", "dist", "plugin.js");
@@ -71,35 +73,24 @@ interface IsolatedEnv {
   readonly configFile: string;
   readonly processEnv: NodeJS.ProcessEnv;
   readonly workDir: string;
-  readonly probeRootPath: string;
   readonly probeMarkerPath: string;
+  readonly probeNonce: string;
 }
 
 async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
   const home = join(tempRoot, "home");
+  const data = join(tempRoot, "data");
+  const cache = join(tempRoot, "cache");
+  const state = join(tempRoot, "state");
   const configDir = join(home, ".config");
   const configFile = join(tempRoot, "opencode.json");
   const workDir = join(tempRoot, "work");
   const probeMarkerPath = join(tempRoot, "load-probe.marker");
-  const tmpDirOverride = await realpath(tmpdir());
-  await Promise.all(
-    [home, join(tempRoot, "data"), join(tempRoot, "cache"), join(tempRoot, "state"), workDir, join(configDir, "opencode")].map(
-      (dir) => mkdir(dir, { recursive: true }),
-    ),
-  );
-  const seed = {
-    home,
-    configDir,
-    configFile,
-    data: join(tempRoot, "data"),
-    cache: join(tempRoot, "cache"),
-    state: join(tempRoot, "state"),
-    workDir,
-    probeRootPath: tempRoot,
-    probeMarkerPath,
-    tmpDirOverride,
-  };
-  return { configFile, workDir, probeRootPath: tempRoot, probeMarkerPath, processEnv: buildIsolatedOpenCodeEnv(seed, process.env) };
+  const probeNonce = generateProbeNonce();
+  const tmpDirOverride = systemTmpDir();
+  await Promise.all([home, data, cache, state, workDir, join(configDir, "opencode")].map((dir) => mkdir(dir, { recursive: true })));
+  const seed = { home, configDir, configFile, data, cache, state, workDir, probeRootPath: tempRoot, probeMarkerPath, probeNonce, tmpDirOverride };
+  return { configFile, workDir, probeMarkerPath, probeNonce, processEnv: buildIsolatedOpenCodeEnv(seed, process.env) };
 }
 
 async function extractTarball(tarball: string, destDir: string): Promise<void> {
@@ -117,17 +108,14 @@ async function linkPeerDep(installDir: string): Promise<void> {
   await symlink(join(REPO_ROOT, "node_modules", "@opencode-ai"), linkTarget, "dir");
 }
 
-async function hashLiveConfigs(): Promise<readonly string[]> {
-  return Promise.all(LIVE_CONFIG_FILES.map((file) => hashFileOrAbsent(file)));
-}
-
-function logHashReceipts(label: string, hashes: readonly string[]): void {
-  for (let index = 0; index < LIVE_CONFIG_FILES.length; index += 1) {
-    const hash = hashes[index];
+async function logHashReceipts(label: string): Promise<readonly string[]> {
+  const hashes = await Promise.all(LIVE_CONFIG_FILES.map((file) => hashFileOrAbsent(file)));
+  hashes.forEach((hash, index) => {
     if (hash !== undefined) {
       console.log(`[INFO] ${label} ${formatHashLine(LIVE_CONFIG_FILES[index] ?? "?", hash)}`);
     }
-  }
+  });
+  return hashes;
 }
 
 function parseDebugConfig(stdout: string): { plugin?: readonly unknown[] } {
@@ -142,7 +130,7 @@ async function main(): Promise<number> {
     console.error(`[FAIL] ${name} — ${detail}`);
   };
 
-  const tempRoot = await mkdtemp(join(tmpdir(), "antigravity-task-plugin-int-"));
+  const tempRoot = await mkdtemp(join(systemTmpDir(), "antigravity-task-plugin-int-"));
   let opencodeBin: string;
   try {
     const env = await makeIsolatedEnv(tempRoot);
@@ -152,8 +140,7 @@ async function main(): Promise<number> {
 
     // Live-config hash guard: capture before any OpenCode invocation. Absence
     // is a valid state (ABSENT marker); only a change before/after is a failure.
-    const hashesBefore = await hashLiveConfigs();
-    logHashReceipts("live-config-before", hashesBefore);
+    const hashesBefore = await logHashReceipts("live-config-before");
 
     // 0. Locate the opencode binary (CI installs opencode-ai@1.18.16 globally).
     const which = run("which", ["opencode"], REPO_ROOT);
@@ -201,8 +188,15 @@ async function main(): Promise<number> {
       fail("packed-entry-present", `missing packed plugin entry ${packedEntry}`);
     }
 
-    // 4. Config pointing at the packed module resolves under `opencode debug config`,
+    // 4. Config pointing at the packed module resolves under `opencode debug config`
     //    from the neutral temp cwd with the strictly isolated allowlist env.
+    //    Freshness first: assert no stale marker exists, then clear stale
+    //    marker/tmp inside the verified root before ANY probe-var command so a
+    //    precreated file cannot replay a previous proof.
+    if (existsSync(env.probeMarkerPath)) {
+      fail("probe-freshness", `marker pre-exists (replay risk): ${env.probeMarkerPath}`);
+    }
+    rmSync(`${env.probeMarkerPath}.tmp`, { force: true });
     await writeOpenCodeConfig(dirname(env.configFile), [entryUrl]);
     const cfg = run(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
     const resolvedPlugin = cfg.exitCode === 0 ? parseDebugConfig(cfg.stdout).plugin ?? [] : [];
@@ -213,11 +207,15 @@ async function main(): Promise<number> {
     } else {
       fail("debug-config-resolve", `plugin spec missing from resolved config: ${JSON.stringify(resolvedPlugin)}`);
     }
+    // The debug-config run may have loaded the plugin and written the marker;
+    // clear it (harness owns the verified root) so check 5 proves a FRESH write.
+    rmSync(env.probeMarkerPath, { force: true });
+    rmSync(`${env.probeMarkerPath}.tmp`, { force: true });
 
     // 5. Real load-bearing proof: `debug info` invokes the packed factory under
     //    the legacy loader. Listing alone is NOT proof (the CLI prints configured
     //    URLs even when no load occurred); checkPluginLoadProof gates on exit 0 +
-    //    exact entry + marker content + no loader errors.
+    //    exact entry + nonce-bound marker content + no loader errors.
     const info = run(opencodeBin, ["--print-logs", "--log-level", "DEBUG", "debug", "info"], env.workDir, env.processEnv);
     const proof = await checkPluginLoadProof({
       exitCode: info.exitCode,
@@ -225,11 +223,12 @@ async function main(): Promise<number> {
       stderr: info.stderr,
       expectedEntry: entryUrl,
       markerPath: env.probeMarkerPath,
+      expectedNonce: env.probeNonce,
     });
     if (!proof.ok) {
       fail("plugin-load-proof", proof.reason ?? "unknown load failure");
     } else {
-      pass("plugin-load-proof", `factory executed under real loader: exit 0, entry listed, marker written, no errors`);
+      pass("plugin-load-proof", `factory executed under real loader: exit 0, entry listed, nonce-bound marker written, no errors`);
     }
 
     // 6. Startup resolves in the isolated env.
@@ -264,8 +263,7 @@ async function main(): Promise<number> {
     }
 
     // 9. Live-config hash guard: nothing touched after all success/failure runs.
-    const hashesAfter = await hashLiveConfigs();
-    logHashReceipts("live-config-after", hashesAfter);
+    const hashesAfter = await logHashReceipts("live-config-after");
     if (hashesBefore.every((hash, index) => hash === hashesAfter[index])) {
       pass("live-config-unchanged", `before/after identical (present hashes or ABSENT)`);
     } else {

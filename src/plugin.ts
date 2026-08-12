@@ -14,26 +14,28 @@
  * function and no duplicate registration can occur.
  *
  * It also carries a narrow, opt-in load probe for the integration harness:
- * when BOTH ANTIGRAVITY_TASK_PLUGIN_ROOT and ANTIGRAVITY_TASK_PLUGIN_MARKER
- * (see plugin-probe.ts) are set to a verified system-temp integration root
- * and its exact direct-child marker path, the factory writes a fixed,
- * non-secret marker atomically BEFORE delegating to the real plugin. This
- * proves the packed factory actually executed under OpenCode's loader —
- * `debug info` lists configured plugin URLs even when no load occurred, so a
- * listed entry is not proof. The root is validated (non-symlink directory
- * under canonical tmpdir() with the harness prefix, marker = exact direct
+ * when ANTIGRAVITY_TASK_PLUGIN_ROOT, ANTIGRAVITY_TASK_PLUGIN_MARKER and
+ * ANTIGRAVITY_TASK_PLUGIN_NONCE (see plugin-probe.ts) are all set to a
+ * verified system-temp integration root, its exact direct-child marker path
+ * and this invocation's nonce, the factory writes a nonce-bound marker
+ * atomically BEFORE delegating to the real plugin. This proves the packed
+ * factory actually executed under OpenCode's loader — `debug info` lists
+ * configured plugin URLs even when no load occurred, so a listed entry is not
+ * proof, and the nonce binding makes a precreated marker unable to replay a
+ * stale proof. The root is validated (non-symlink directory under canonical
+ * tmpdir() with the exact harness mkdtemp basename, marker = exact direct
  * child) and NO filesystem write ever happens outside it; an invalid contract
  * fails the plugin load with a bounded error. Without the env vars, zero
  * probe I/O happens and runtime behavior is byte-for-byte the real plugin.
  * The entry module itself still exports ONLY the factory function.
  */
 import { AntigravityTaskPlugin } from "./index.js";
-import { PLUGIN_LOAD_MARKER_ENV, PLUGIN_LOAD_ROOT_ENV, writeLoadMarker } from "./plugin-probe.js";
+import { PLUGIN_LOAD_MARKER_ENV, PLUGIN_LOAD_NONCE_ENV, PLUGIN_LOAD_ROOT_ENV, writeLoadMarker } from "./plugin-probe.js";
 
 export default async function antigravityTaskPluginProbe(
   input: Parameters<typeof AntigravityTaskPlugin>[0],
   options?: Parameters<typeof AntigravityTaskPlugin>[1],
 ) {
-  writeLoadMarker(process.env[PLUGIN_LOAD_ROOT_ENV], process.env[PLUGIN_LOAD_MARKER_ENV]);
+  writeLoadMarker(process.env[PLUGIN_LOAD_ROOT_ENV], process.env[PLUGIN_LOAD_MARKER_ENV], process.env[PLUGIN_LOAD_NONCE_ENV]);
   return AntigravityTaskPlugin(input, options);
 }

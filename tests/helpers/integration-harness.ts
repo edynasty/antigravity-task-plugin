@@ -6,17 +6,19 @@
  * The E2E orchestration in tests/integration-harness.ts composes these, and
  * tests/integration-harness.test.ts locks the contracts.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { PLUGIN_LOAD_MARKER_CONTENT, PLUGIN_LOAD_MARKER_ENV, PLUGIN_LOAD_ROOT_ENV } from "../../src/plugin-probe.js";
+import { PLUGIN_LOAD_MARKER_ENV, PLUGIN_LOAD_NONCE_ENV, PLUGIN_LOAD_ROOT_ENV } from "../../src/plugin-probe.js";
 
 /** Marker for a config file that does not exist (distinct from any digest). */
 export const ABSENT = "ABSENT";
 
 /** Locale/system vars a CLI child may need; carried verbatim when present. */
-const PASSTHROUGH_VARS = ["PATH", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"] as const;
+const PASSTHROUGH_VARS = ["PATH", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ"] as const;
 
 /** Explicit allowlist isolation flags for OpenCode child processes. */
 const ISOLATION_FLAGS = [
@@ -36,6 +38,7 @@ export interface OpenCodeEnvSeed {
   readonly workDir: string;
   readonly probeRootPath?: string;
   readonly probeMarkerPath?: string;
+  readonly probeNonce?: string;
   readonly tmpDirOverride?: string;
 }
 
@@ -43,10 +46,12 @@ export interface OpenCodeEnvSeed {
  * Build the strictly isolated environment for an OpenCode child process.
  * Returns a fresh object containing ONLY the seed paths, the four isolation
  * flags forced to "1", passthrough locale/system vars from the parent, and —
- * when the harness opts in — the probe root+marker env vars. The probe vars
- * are NEVER inherited from the parent: both come from the generated seed.
- * Never OPENCODE_PURE, never OPENCODE_CONFIG_CONTENT, never credential-like
- * or inherited config-path values.
+ * when the harness opts in — the probe root/marker/nonce env vars. The probe
+ * vars are NEVER inherited from the parent: all three come from the generated
+ * seed. TMPDIR comes ONLY from the seed override (applied last, after any
+ * passthrough) so a hostile parent value can never win. Never OPENCODE_PURE,
+ * never OPENCODE_CONFIG_CONTENT, never credential-like or inherited
+ * config-path values.
  */
 export function buildIsolatedOpenCodeEnv(seed: OpenCodeEnvSeed, parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const child: NodeJS.ProcessEnv = {
@@ -60,117 +65,71 @@ export function buildIsolatedOpenCodeEnv(seed: OpenCodeEnvSeed, parentEnv: NodeJ
   for (const flag of ISOLATION_FLAGS) {
     child[flag] = "1";
   }
-  if (seed.probeRootPath !== undefined && seed.probeMarkerPath !== undefined) {
-    child[PLUGIN_LOAD_ROOT_ENV] = seed.probeRootPath;
-    child[PLUGIN_LOAD_MARKER_ENV] = seed.probeMarkerPath;
-  }
-  if (seed.tmpDirOverride !== undefined) {
-    child["TMPDIR"] = seed.tmpDirOverride;
-  }
   for (const key of PASSTHROUGH_VARS) {
     const value = parentEnv[key];
     if (value !== undefined) {
       child[key] = value;
     }
   }
+  if (seed.tmpDirOverride !== undefined) {
+    child["TMPDIR"] = seed.tmpDirOverride;
+  }
+  if (seed.probeRootPath !== undefined && seed.probeMarkerPath !== undefined && seed.probeNonce !== undefined) {
+    child[PLUGIN_LOAD_ROOT_ENV] = seed.probeRootPath;
+    child[PLUGIN_LOAD_MARKER_ENV] = seed.probeMarkerPath;
+    child[PLUGIN_LOAD_NONCE_ENV] = seed.probeNonce;
+  }
   return child;
 }
 
+/** Generate a fresh per-run proof nonce: 32 lowercase hex characters. */
+export function generateProbeNonce(): string {
+  return randomBytes(16).toString("hex");
+}
+
+/** Canonical system temp dir, independent of any inherited/hostile TMPDIR. */
+export function systemTmpDir(): string {
+  const inherited = process.env["TMPDIR"];
+  delete process.env["TMPDIR"];
+  try {
+    return realpathSync(tmpdir());
+  } finally {
+    setOrDelete("TMPDIR", inherited);
+  }
+}
+
 /**
- * Run `body` with the probe env vars cleared (save/restore). The probe root
- * and marker belong ONLY in the isolated child env; a hostile parent value
- * must never affect a direct in-process import/instantiation of the plugin.
+ * Run `body` with the probe env vars cleared (save/restore). The probe root,
+ * marker and nonce belong ONLY in the isolated child env; hostile parent
+ * values must never affect a direct in-process import/instantiation.
  */
 export async function withoutProbeEnv<T>(body: () => Promise<T>): Promise<T> {
   const previousRoot = process.env[PLUGIN_LOAD_ROOT_ENV];
   const previousMarker = process.env[PLUGIN_LOAD_MARKER_ENV];
+  const previousNonce = process.env[PLUGIN_LOAD_NONCE_ENV];
   delete process.env[PLUGIN_LOAD_ROOT_ENV];
   delete process.env[PLUGIN_LOAD_MARKER_ENV];
+  delete process.env[PLUGIN_LOAD_NONCE_ENV];
   try {
     return await body();
   } finally {
-    if (previousRoot === undefined) {
-      delete process.env[PLUGIN_LOAD_ROOT_ENV];
-    } else {
-      process.env[PLUGIN_LOAD_ROOT_ENV] = previousRoot;
-    }
-    if (previousMarker === undefined) {
-      delete process.env[PLUGIN_LOAD_MARKER_ENV];
-    } else {
-      process.env[PLUGIN_LOAD_MARKER_ENV] = previousMarker;
-    }
+    setOrDelete(PLUGIN_LOAD_ROOT_ENV, previousRoot);
+    setOrDelete(PLUGIN_LOAD_MARKER_ENV, previousMarker);
+    setOrDelete(PLUGIN_LOAD_NONCE_ENV, previousNonce);
+  }
+}
+
+function setOrDelete(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
   }
 }
 
 /** Render a config-file hash receipt: path + 64-hex digest, or ABSENT. */
 export function formatHashLine(file: string, hash: string): string {
   return `${file} ${hash}`;
-}
-
-/** OpenCode legacy-loader failure signals that must never appear in load logs. */
-const PLUGIN_LOAD_ERROR_PATTERN = /failed to load plugin|Plugin export is not a function/i;
-
-export interface PluginLoadProofInput {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly expectedEntry: string;
-  readonly markerPath: string;
-}
-
-export interface PluginLoadProofResult {
-  readonly ok: boolean;
-  readonly reason: string | undefined;
-}
-
-/** Parse the `plugins:` section of `opencode debug info` output into exact entries. */
-export function parseDebugPluginList(stdout: string): readonly string[] {
-  const lines = stdout.split("\n");
-  const headerIndex = lines.findIndex((line) => line.startsWith("plugins:"));
-  if (headerIndex === -1) {
-    return [];
-  }
-  const entries: string[] = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("- ")) {
-      entries.push(trimmed.slice(2).trim());
-    }
-  }
-  return entries;
-}
-
-/**
- * Strict proof that the dedicated packed plugin factory executed under
- * OpenCode's real loader. `debug info` prints configured plugin URLs even when
- * no load occurred and exits 0, so a listed entry or a clean exit is NOT
- * proof. All four gates must hold: exitCode === 0, the parsed plugins list
- * contains the exact expected entry, the opt-in marker file exists with the
- * fixed probe content, and no legacy-loader error appears in the logs.
- */
-export async function checkPluginLoadProof(input: PluginLoadProofInput): Promise<PluginLoadProofResult> {
-  if (input.exitCode !== 0) {
-    return { ok: false, reason: `debug info exited ${input.exitCode}` };
-  }
-  const listed = parseDebugPluginList(input.stdout);
-  if (!listed.includes(input.expectedEntry)) {
-    return { ok: false, reason: `expected entry not listed: ${input.expectedEntry}; got ${JSON.stringify(listed)}` };
-  }
-  const loadLog = `${input.stderr}\n${input.stdout}`;
-  const loadError = loadLog.match(PLUGIN_LOAD_ERROR_PATTERN)?.[0];
-  if (loadError !== undefined) {
-    return { ok: false, reason: `legacy loader reported: ${loadError}` };
-  }
-  let marker: string;
-  try {
-    marker = await readFile(input.markerPath, "utf8");
-  } catch {
-    return { ok: false, reason: `marker absent: ${input.markerPath}` };
-  }
-  if (marker !== PLUGIN_LOAD_MARKER_CONTENT) {
-    return { ok: false, reason: `marker content mismatch at ${input.markerPath}` };
-  }
-  return { ok: true, reason: undefined };
 }
 
 /** sha256 hex digest of the file at `path`, or "ABSENT" when it does not exist. */
@@ -257,9 +216,4 @@ export async function loadPluginFactory(entryUrl: string): Promise<LoadedPlugin>
     namedIsFunction: typeof mod.AntigravityTaskPlugin === "function",
     toolKeys: Object.keys(hooks.tool ?? {}),
   };
-}
-
-/** Directory of the module that called this helper (for repo-root discovery). */
-export function callerDir(importMetaUrl: string): string {
-  return dirname(new URL(importMetaUrl).pathname);
 }

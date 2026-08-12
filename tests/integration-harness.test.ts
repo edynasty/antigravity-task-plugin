@@ -1,12 +1,10 @@
 /**
- * Unit tests for the isolated OpenCode loading harness helpers (Todo 6).
- *
- * The real E2E gate (build -> pack -> extract -> import+instantiate -> debug
- * config/startup -> negative path -> live-config hash guard) runs in
- * tests/integration-harness.ts via `bun run test:integration`. These tests
- * lock the pure helper contracts that orchestration composes, so a regression
- * in hashing, config writing, spec resolution, or plugin loading fails here
- * first, fast, and without needing the `opencode` binary.
+ * Env/hash/config helper-contract tests for the isolated OpenCode loading
+ * harness (Todo 6). The load-proof checker and hash-line formatting live in
+ * tests/load-proof.test.ts; this file covers env building, hashing, config
+ * writing, spec resolution, and packed-module loading. The real E2E gate runs
+ * in tests/integration-harness.ts via `bun run test:integration`. Each file
+ * stays <= 250 pure LOC.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -15,15 +13,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   buildIsolatedOpenCodeEnv,
-  checkPluginLoadProof,
-  formatHashLine,
   hashFileOrAbsent,
   loadPluginFactory,
   packOutputFilename,
   specToPluginSpec,
   writeOpenCodeConfig,
 } from "./helpers/integration-harness";
-import { PLUGIN_LOAD_MARKER_CONTENT } from "../src/plugin-probe.js";
 
 describe("integration harness helpers", () => {
   let tempRoot: string;
@@ -154,211 +149,33 @@ describe("buildIsolatedOpenCodeEnv", () => {
     workDir: "/tmp/w",
   };
 
-  test("drops hostile inherited OPENCODE_* vars and config-path overrides", () => {
-    const parentEnv = {
-      OPENCODE_CONFIG_CONTENT: '{"model":"evil"}',
-      OPENCODE_CONFIG: "/evil/opencode.json",
-      OPENCODE_PURE: "1",
-      OPENCODE_DISABLE_PROJECT_CONFIG: "0",
-      HOME: "/evil/home",
-    };
+  test("hostile parent TMPDIR cannot override the generated seed tmp dir", () => {
+    const child = buildIsolatedOpenCodeEnv(
+      { ...seed, tmpDirOverride: "/private/var/example/generated-tmp" },
+      { PATH: "/usr/bin:/bin", TMPDIR: "/evil/tmp" },
+    );
 
-    const child = buildIsolatedOpenCodeEnv(seed, parentEnv);
-
-    expect(child["OPENCODE_CONFIG_CONTENT"]).toBeUndefined();
-    expect(child["OPENCODE_PURE"]).toBeUndefined();
-    expect(child["HOME"]).toBe(seed.home);
-    expect(child["OPENCODE_CONFIG"]).toBe(seed.configFile);
-    expect(child["OPENCODE_DISABLE_PROJECT_CONFIG"]).toBe("1");
+    expect(child["TMPDIR"]).toBe("/private/var/example/generated-tmp");
   });
 
-  test("strips hostile XDG/HOME values and credential-like env entirely", () => {
-    const parentEnv = {
-      HOME: "/evil/home",
-      XDG_CONFIG_HOME: "/evil/xdg",
-      XDG_DATA_HOME: "/evil/data",
-      XDG_CACHE_HOME: "/evil/cache",
-      XDG_STATE_HOME: "/evil/state",
-      OPENAI_API_KEY: "sk-evil-secret-value",
-      ANTHROPIC_API_KEY: "sk-ant-evil",
-      GITHUB_TOKEN: "ghp_evil",
-    };
+  test("probe vars come only from the seed, never inherited from the parent", () => {
+    const child = buildIsolatedOpenCodeEnv(
+      {
+        ...seed,
+        probeRootPath: "/tmp/gen-root",
+        probeMarkerPath: "/tmp/gen-root/load-probe.marker",
+        probeNonce: "a".repeat(32),
+      },
+      {
+        ANTIGRAVITY_TASK_PLUGIN_ROOT: "/evil/root",
+        ANTIGRAVITY_TASK_PLUGIN_MARKER: "/evil/marker",
+        ANTIGRAVITY_TASK_PLUGIN_NONCE: "evil",
+      },
+    );
 
-    const child = buildIsolatedOpenCodeEnv(seed, parentEnv);
-
-    expect(child["HOME"]).toBe(seed.home);
-    expect(child["XDG_CONFIG_HOME"]).toBe(seed.configDir);
-    expect(child["XDG_DATA_HOME"]).toBe(seed.data);
-    expect(child["XDG_CACHE_HOME"]).toBe(seed.cache);
-    expect(child["XDG_STATE_HOME"]).toBe(seed.state);
-    expect(child["OPENAI_API_KEY"]).toBeUndefined();
-    expect(child["ANTHROPIC_API_KEY"]).toBeUndefined();
-    expect(child["GITHUB_TOKEN"]).toBeUndefined();
-  });
-
-  test("forces all four isolation disable flags to 1", () => {
-    const child = buildIsolatedOpenCodeEnv(seed, {
-      OPENCODE_DISABLE_PROJECT_CONFIG: "0",
-      OPENCODE_DISABLE_DEFAULT_PLUGINS: "0",
-      OPENCODE_DISABLE_EXTERNAL_SKILLS: "0",
-      OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "0",
-    });
-
-    expect(child["OPENCODE_DISABLE_PROJECT_CONFIG"]).toBe("1");
-    expect(child["OPENCODE_DISABLE_DEFAULT_PLUGINS"]).toBe("1");
-    expect(child["OPENCODE_DISABLE_EXTERNAL_SKILLS"]).toBe("1");
-    expect(child["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"]).toBe("1");
-  });
-
-  test("carries only a sanitized PATH plus optional locale/system vars", () => {
-    const child = buildIsolatedOpenCodeEnv(seed, {
-      PATH: "/usr/bin:/bin",
-      TERM: "xterm-256color",
-      LANG: "en_US.UTF-8",
-      OTHER_LEGACY: "should-not-appear",
-    });
-
-    expect(child["PATH"]).toBe("/usr/bin:/bin");
-    expect(child["TERM"]).toBe("xterm-256color");
-    expect(child["LANG"]).toBe("en_US.UTF-8");
-    expect(child["OTHER_LEGACY"]).toBeUndefined();
-  });
-
-  test("returns a fresh object that never aliases the parent env", () => {
-    const parentEnv = { PATH: "/usr/bin:/bin" };
-
-    const child = buildIsolatedOpenCodeEnv(seed, parentEnv);
-
-    expect(child).not.toBe(parentEnv);
-    parentEnv["PATH"] = "/mutated";
-    expect(child["PATH"]).toBe("/usr/bin:/bin");
+    expect(child["ANTIGRAVITY_TASK_PLUGIN_ROOT"]).toBe("/tmp/gen-root");
+    expect(child["ANTIGRAVITY_TASK_PLUGIN_MARKER"]).toBe("/tmp/gen-root/load-probe.marker");
+    expect(child["ANTIGRAVITY_TASK_PLUGIN_NONCE"]).toBe("a".repeat(32));
   });
 });
 
-describe("checkPluginLoadProof", () => {
-  let proofRoot: string;
-  const ENTRY = "file:///tmp/install/package/dist/plugin.js";
-  const LISTED = `opencode version: 1.18.16\nplugins:\n- ${ENTRY}\n`;
-  const MARKER = PLUGIN_LOAD_MARKER_CONTENT;
-
-  beforeAll(async () => {
-    proofRoot = await mkdtemp(join(tmpdir(), "antigravity-proof-"));
-  });
-
-  afterAll(async () => {
-    await rm(proofRoot, { recursive: true, force: true });
-  });
-
-  test("passes only with exit 0, exact expected entry, marker, and no loader error", async () => {
-    const markerPath = join(proofRoot, "proof-ok.marker");
-    await writeFile(markerPath, MARKER);
-
-    const result = await checkPluginLoadProof({
-      exitCode: 0,
-      stdout: LISTED,
-      stderr: "unrelated noise",
-      expectedEntry: ENTRY,
-      markerPath,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.reason).toBeUndefined();
-  });
-
-  test("fails when a DIFFERENT plugin is listed even with exit 0 and no errors", async () => {
-    const markerPath = join(proofRoot, "proof-unrelated.marker");
-    await writeFile(markerPath, MARKER);
-    const unrelatedList = "opencode version: 1.18.16\nplugins:\n- file:///other/plugin.js\n";
-
-    const result = await checkPluginLoadProof({
-      exitCode: 0,
-      stdout: unrelatedList,
-      stderr: "",
-      expectedEntry: ENTRY,
-      markerPath,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/expected entry/);
-  });
-
-  test("fails when the expected entry is entirely missing from the plugins list", async () => {
-    const markerPath = join(proofRoot, "proof-missing-entry.marker");
-    await writeFile(markerPath, MARKER);
-
-    const result = await checkPluginLoadProof({
-      exitCode: 0,
-      stdout: "opencode version: 1.18.16\nplugins:\n",
-      stderr: "",
-      expectedEntry: ENTRY,
-      markerPath,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/expected entry/);
-  });
-
-  test("fails on nonzero exit even when entry is listed and marker exists", async () => {
-    const markerPath = join(proofRoot, "proof-nonzero.marker");
-    await writeFile(markerPath, MARKER);
-
-    const result = await checkPluginLoadProof({
-      exitCode: 3,
-      stdout: LISTED,
-      stderr: "",
-      expectedEntry: ENTRY,
-      markerPath,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/exit/);
-  });
-
-  test("fails when the marker is absent even with entry listed, exit 0, and no errors", async () => {
-    const markerPath = join(proofRoot, "proof-no-marker.marker");
-
-    const result = await checkPluginLoadProof({
-      exitCode: 0,
-      stdout: LISTED,
-      stderr: "",
-      expectedEntry: ENTRY,
-      markerPath,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/marker/);
-  });
-
-  test("fails when the marker content differs from the fixed contract", async () => {
-    const markerPath = join(proofRoot, "proof-bad-content.marker");
-    await writeFile(markerPath, "different content\n");
-
-    const result = await checkPluginLoadProof({
-      exitCode: 0,
-      stdout: LISTED,
-      stderr: "",
-      expectedEntry: ENTRY,
-      markerPath,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/marker/);
-  });
-});
-
-describe("formatHashLine", () => {
-  test("renders ABSENT distinctly from any present digest", () => {
-    const line = formatHashLine("/tmp/config.jsonc", "ABSENT");
-    expect(line).toContain("/tmp/config.jsonc");
-    expect(line).toContain("ABSENT");
-    expect(line).not.toMatch(/[0-9a-f]{64}/);
-  });
-
-  test("renders a present sha256 digest", () => {
-    const digest = "a".repeat(64);
-    const line = formatHashLine("/tmp/config.jsonc", digest);
-    expect(line).toContain("/tmp/config.jsonc");
-    expect(line).toContain(digest);
-    expect(line).not.toContain("ABSENT");
-  });
-});
