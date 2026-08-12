@@ -5,35 +5,31 @@
  * HOME, OPENCODE_CONFIG, XDG data/cache/state dirs, the pack output, the
  * extracted install, and the plugin node_modules link. OpenCode child
  * processes get a strictly allowlisted environment (temp paths + isolation
- * flags + locale passthrough only) and run from a neutral temp cwd, so
- * inherited OPENCODE vars, XDG/HOME/credential values, project config, default
- * plugins, and external/Claude skills cannot bleed into the isolated test.
+ * flags + locale passthrough + the opt-in probe marker only) and run from a
+ * neutral temp cwd, so inherited OPENCODE vars, XDG/HOME/credential values,
+ * project config, default plugins, and external/Claude skills cannot bleed in.
  * It proves the strongest no-LLM OpenCode story available on 1.18.16:
  *
- *   1. the packed artifact imports and instantiates with exactly one tool
- *      ("antigravity-task"), via default and named factory exports;
+ *   1. the packed loader-safe entry (dist/plugin.js, single default factory)
+ *      imports and instantiates with exactly one tool ("antigravity-task");
  *   2. `opencode debug config` resolves a config whose plugin spec points at
  *      the packed module (exit 0, spec present in the resolved JSON);
- *   3. `opencode debug info --print-logs --log-level DEBUG` actually LOADS the
- *      packed plugin under the real loader: logs must contain NO
- *      "failed to load plugin" / "Plugin export is not a function" and the
- *      plugin must appear in the plugins list (positive load signal);
+ *   3. a real load-bearing `opencode debug info --print-logs` run proves the
+ *      packed factory EXECUTED under the real loader: exit 0, the exact
+ *      expected entry in the parsed plugins list, the opt-in marker written
+ *      by the factory body, and no "failed to load plugin" / "Plugin export
+ *      is not a function" log (listing alone is NOT proof — the CLI prints
+ *      configured URLs even when no load occurred);
  *   4. negative: an invalid plugin entry makes `opencode debug config` exit
  *      nonzero with an actionable schema error, and importing a definitely
  *      nonexistent plugin spec fails with an actionable load error;
  *   5. the live config files (~/.config/opencode/opencode.jsonc and
  *      ~/.omo/omo.jsonc) hash unchanged before/after, each present hash or
- *      ABSENT logged distinctly.
- *
- * The packed plugin is loaded through the dedicated loader-safe entry
- * (dist/plugin.js), which exports ONLY the plugin factory function — the
- * root dist/index.js exports constants/schema/helpers that make OpenCode's
- * legacy loader (Object.values traversal) throw "Plugin export is not a
- * function" even though the CLI exits 0.
- *
- * OpenCode CLI cannot enumerate a plugin's tools without a session/LLM, so
- * tool registration is proven by importing and instantiating the packed
- * module directly — documented limitation, not a paid-model invocation.
+  *      ABSENT logged distinctly.
+  *
+  * Tool registration is proven by importing and instantiating the packed
+  * module directly — the CLI cannot enumerate tools without a session/LLM
+  * (documented limitation, no paid-model invocation).
  */
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
@@ -42,9 +38,9 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   buildIsolatedOpenCodeEnv,
+  checkPluginLoadProof,
   formatHashLine,
   hashFileOrAbsent,
-  inspectPluginLoad,
   loadPluginFactory,
   packOutputFilename,
   writeOpenCodeConfig,
@@ -60,22 +56,25 @@ interface SpawnResult {
   readonly stderr: string;
 }
 
-/** Normal build/pack/tooling commands: inherit the parent env (repo-local, no isolation). */
-function runNormal(command: string, args: readonly string[], cwd: string, env?: NodeJS.ProcessEnv): SpawnResult {
-  const result = spawnSync(command, args, { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
+/**
+ * Spawn a command. Build/pack/tooling passes the parent env (repo-local, no
+ * isolation); OpenCode children pass the exact allowlist env built by
+ * buildIsolatedOpenCodeEnv and are never merged with process.env.
+ */
+function run(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): SpawnResult {
+  const result = spawnSync(command, args, { cwd, env, encoding: "utf8" });
   return { exitCode: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-/** Isolated OpenCode child: the EXACT allowlist env, never merged with process.env. */
-function runIsolated(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): SpawnResult {
-  const result = spawnSync(command, args, { cwd, env, encoding: "utf8" });
-  return { exitCode: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+function parentEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...process.env, ...extra };
 }
 
 interface IsolatedEnv {
   readonly configFile: string;
   readonly processEnv: NodeJS.ProcessEnv;
   readonly workDir: string;
+  readonly probeMarkerPath: string;
 }
 
 async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
@@ -85,17 +84,16 @@ async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
   const state = join(tempRoot, "state");
   const configFile = join(tempRoot, "opencode.json");
   const workDir = join(tempRoot, "work");
-  await mkdir(home, { recursive: true });
-  await mkdir(data, { recursive: true });
-  await mkdir(cache, { recursive: true });
-  await mkdir(state, { recursive: true });
-  await mkdir(workDir, { recursive: true });
-  await mkdir(join(home, ".config", "opencode"), { recursive: true });
+  const probeMarkerPath = join(tempRoot, "load-probe.marker");
+  await Promise.all(
+    [home, data, cache, state, workDir, join(home, ".config", "opencode")].map((dir) => mkdir(dir, { recursive: true })),
+  );
   return {
     configFile,
     workDir,
+    probeMarkerPath,
     processEnv: buildIsolatedOpenCodeEnv(
-      { home, configDir: join(home, ".config"), configFile, data, cache, state, workDir },
+      { home, configDir: join(home, ".config"), configFile, data, cache, state, workDir, probeMarkerPath },
       process.env,
     ),
   };
@@ -103,7 +101,7 @@ async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
 
 async function extractTarball(tarball: string, destDir: string): Promise<void> {
   await mkdir(destDir, { recursive: true });
-  const result = runNormal("tar", ["-xzf", tarball, "-C", destDir], REPO_ROOT);
+  const result = run("tar", ["-xzf", tarball, "-C", destDir], REPO_ROOT, parentEnv());
   if (result.exitCode !== 0) {
     throw new Error(`tar extraction failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
@@ -120,9 +118,17 @@ async function hashLiveConfigs(): Promise<readonly string[]> {
   return Promise.all(LIVE_CONFIG_FILES.map((file) => hashFileOrAbsent(file)));
 }
 
+function logHashReceipts(label: string, hashes: readonly string[]): void {
+  for (let index = 0; index < LIVE_CONFIG_FILES.length; index += 1) {
+    const hash = hashes[index];
+    if (hash !== undefined) {
+      console.log(`[INFO] ${label} ${formatHashLine(LIVE_CONFIG_FILES[index] ?? "?", hash)}`);
+    }
+  }
+}
+
 function parseDebugConfig(stdout: string): { plugin?: readonly unknown[] } {
-  const parsed = JSON.parse(stdout) as { plugin?: readonly unknown[] };
-  return parsed;
+  return JSON.parse(stdout) as { plugin?: readonly unknown[] };
 }
 
 async function main(): Promise<number> {
@@ -144,26 +150,21 @@ async function main(): Promise<number> {
     // Live-config hash guard: capture before any OpenCode invocation. Absence
     // is a valid state (ABSENT marker); only a change before/after is a failure.
     const hashesBefore = await hashLiveConfigs();
-    for (let index = 0; index < LIVE_CONFIG_FILES.length; index += 1) {
-      const hash = hashesBefore[index];
-      if (hash !== undefined) {
-        console.log(`[INFO] live-config-before ${formatHashLine(LIVE_CONFIG_FILES[index] ?? "?", hash)}`);
-      }
-    }
+    logHashReceipts("live-config-before", hashesBefore);
 
     // 0. Locate the opencode binary (CI installs opencode-ai@1.18.16 globally).
-    const which = runNormal("which", ["opencode"], REPO_ROOT);
+    const which = run("which", ["opencode"], REPO_ROOT, parentEnv());
     if (which.exitCode !== 0) {
       throw new Error(`opencode CLI not found on PATH; install with: npm i -g opencode-ai@1.18.16 (${which.stderr.trim()})`);
     }
     opencodeBin = which.stdout.trim();
 
     // 1. Build + pack the repository into the temp pack dir.
-    const build = runNormal("bun", ["run", "build"], REPO_ROOT);
+    const build = run("bun", ["run", "build"], REPO_ROOT, parentEnv());
     if (build.exitCode !== 0) {
       throw new Error(`bun run build failed (exit ${build.exitCode}): ${build.stderr.trim()}`);
     }
-    const pack = runNormal("npm", ["pack", "--pack-destination", packDir], REPO_ROOT);
+    const pack = run("npm", ["pack", "--pack-destination", packDir], REPO_ROOT, parentEnv());
     if (pack.exitCode !== 0) {
       throw new Error(`npm pack failed (exit ${pack.exitCode}): ${pack.stderr.trim()}`);
     }
@@ -188,19 +189,19 @@ async function main(): Promise<number> {
     }
 
     // 3b. Pack metadata: the dedicated entry and its declaration are in the artifact.
-    const pluginJs = join(installDir, "package", "dist", "plugin.js");
-    const pluginDts = join(installDir, "package", "dist", "plugin.d.ts");
-    const entryExists = (await Bun.file(pluginJs).exists()) && (await Bun.file(pluginDts).exists());
-    if (entryExists) {
+    const packedEntry = join(installDir, "package", "dist", "plugin.js");
+    const packedDts = join(installDir, "package", "dist", "plugin.d.ts");
+    const entryInPack = (await Bun.file(packedEntry).exists()) && (await Bun.file(packedDts).exists());
+    if (entryInPack) {
       pass("packed-entry-present", `dist/plugin.js + dist/plugin.d.ts in tarball`);
     } else {
-      fail("packed-entry-present", `missing packed plugin entry ${pluginJs}`);
+      fail("packed-entry-present", `missing packed plugin entry ${packedEntry}`);
     }
 
     // 4. Config pointing at the packed module resolves under `opencode debug config`,
     //    from the neutral temp cwd with the strictly isolated allowlist env.
     await writeOpenCodeConfig(dirname(env.configFile), [entryUrl]);
-    const cfg = runIsolated(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
+    const cfg = run(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
     if (cfg.exitCode !== 0) {
       fail("debug-config-resolve", `exit ${cfg.exitCode}: ${cfg.stderr.trim()}`);
     } else {
@@ -212,21 +213,28 @@ async function main(): Promise<number> {
       }
     }
 
-    // 5. Real load-bearing check: `debug info --print-logs --log-level DEBUG`
-    //    actually loads the packed plugin through the legacy loader. The
-    //    loader logs `failed to load plugin ... Plugin export is not a
-    //    function` on every failure and nothing on success (CLI exits 0
-    //    either way), so absence of the error is the positive load signal.
-    const info = runIsolated(opencodeBin, ["--print-logs", "--log-level", "DEBUG", "debug", "info"], env.workDir, env.processEnv);
-    const load = inspectPluginLoad(info.stdout, info.stderr, info.stdout.includes("plugins:"));
-    if (!load.clean) {
-      fail("plugin-load-clean", load.loadError ?? "unknown load failure");
+    // 5. Real load-bearing proof: `debug info --print-logs --log-level DEBUG`
+    //    actually invokes the packed plugin factory under the legacy loader.
+    //    `debug info` prints configured plugin URLs even when no load occurred
+    //    and exits 0, so listing alone is NOT proof — the opt-in marker file
+    //    proves the factory body executed. checkPluginLoadProof gates on
+    //    exitCode 0 + exact expected entry + marker content + no loader errors.
+    const info = run(opencodeBin, ["--print-logs", "--log-level", "DEBUG", "debug", "info"], env.workDir, env.processEnv);
+    const proof = await checkPluginLoadProof({
+      exitCode: info.exitCode,
+      stdout: info.stdout,
+      stderr: info.stderr,
+      expectedEntry: entryUrl,
+      markerPath: env.probeMarkerPath,
+    });
+    if (!proof.ok) {
+      fail("plugin-load-proof", proof.reason ?? "unknown load failure");
     } else {
-      pass("plugin-load-clean", `no failed-to-load/export error in DEBUG logs; plugin listed (exit ${info.exitCode})`);
+      pass("plugin-load-proof", `factory executed under real loader: exit 0, entry listed, marker written, no errors`);
     }
 
     // 6. Startup resolves in the isolated env.
-    const startup = runIsolated(opencodeBin, ["debug", "startup"], env.workDir, env.processEnv);
+    const startup = run(opencodeBin, ["debug", "startup"], env.workDir, env.processEnv);
     if (startup.exitCode === 0 && startup.stdout.trim().length > 0) {
       pass("debug-startup", `exit 0, timing printed`);
     } else {
@@ -235,7 +243,7 @@ async function main(): Promise<number> {
 
     // 7. NEGATIVE A: invalid plugin entry shape is rejected by `debug config` itself.
     await writeOpenCodeConfig(dirname(env.configFile), [42]);
-    const negA = runIsolated(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
+    const negA = run(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
     if (negA.exitCode !== 0 && /Expected string \| array|plugin/i.test(negA.stderr)) {
       pass("negative-invalid-entry", `exit ${negA.exitCode}, actionable schema error`);
     } else {
@@ -256,20 +264,13 @@ async function main(): Promise<number> {
       }
     }
 
-    // 8. Live-config hash guard: nothing touched after all success/failure runs.
+    // 9. Live-config hash guard: nothing touched after all success/failure runs.
     const hashesAfter = await hashLiveConfigs();
-    for (let index = 0; index < LIVE_CONFIG_FILES.length; index += 1) {
-      const hash = hashesAfter[index];
-      if (hash !== undefined) {
-        console.log(`[INFO] live-config-after ${formatHashLine(LIVE_CONFIG_FILES[index] ?? "?", hash)}`);
-      }
-    }
-    const unchanged = hashesBefore.every((hash, index) => hash === hashesAfter[index]);
-    if (unchanged) {
+    logHashReceipts("live-config-after", hashesAfter);
+    if (hashesBefore.every((hash, index) => hash === hashesAfter[index])) {
       pass("live-config-unchanged", `before/after identical (present hashes or ABSENT)`);
     } else {
-      const diffs = LIVE_CONFIG_FILES.map((file, index) => (hashesBefore[index] === hashesAfter[index] ? "" : file)).filter(Boolean);
-      fail("live-config-unchanged", `changed: ${diffs.join(", ")}`);
+      fail("live-config-unchanged", `changed: ${LIVE_CONFIG_FILES.filter((_, index) => hashesBefore[index] !== hashesAfter[index]).join(", ")}`);
     }
   } catch (error) {
     fail("harness-setup", error instanceof Error ? error.message : String(error));

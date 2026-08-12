@@ -15,14 +15,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   buildIsolatedOpenCodeEnv,
+  checkPluginLoadProof,
   formatHashLine,
   hashFileOrAbsent,
-  inspectPluginLoad,
   loadPluginFactory,
   packOutputFilename,
   specToPluginSpec,
   writeOpenCodeConfig,
 } from "./helpers/integration-harness";
+import { PLUGIN_LOAD_MARKER_CONTENT } from "../src/plugin-probe.js";
 
 describe("integration harness helpers", () => {
   let tempRoot: string;
@@ -234,6 +235,117 @@ describe("buildIsolatedOpenCodeEnv", () => {
   });
 });
 
+describe("checkPluginLoadProof", () => {
+  let proofRoot: string;
+  const ENTRY = "file:///tmp/install/package/dist/plugin.js";
+  const LISTED = `opencode version: 1.18.16\nplugins:\n- ${ENTRY}\n`;
+  const MARKER = PLUGIN_LOAD_MARKER_CONTENT;
+
+  beforeAll(async () => {
+    proofRoot = await mkdtemp(join(tmpdir(), "antigravity-proof-"));
+  });
+
+  afterAll(async () => {
+    await rm(proofRoot, { recursive: true, force: true });
+  });
+
+  test("passes only with exit 0, exact expected entry, marker, and no loader error", async () => {
+    const markerPath = join(proofRoot, "proof-ok.marker");
+    await writeFile(markerPath, MARKER);
+
+    const result = await checkPluginLoadProof({
+      exitCode: 0,
+      stdout: LISTED,
+      stderr: "unrelated noise",
+      expectedEntry: ENTRY,
+      markerPath,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
+
+  test("fails when a DIFFERENT plugin is listed even with exit 0 and no errors", async () => {
+    const markerPath = join(proofRoot, "proof-unrelated.marker");
+    await writeFile(markerPath, MARKER);
+    const unrelatedList = "opencode version: 1.18.16\nplugins:\n- file:///other/plugin.js\n";
+
+    const result = await checkPluginLoadProof({
+      exitCode: 0,
+      stdout: unrelatedList,
+      stderr: "",
+      expectedEntry: ENTRY,
+      markerPath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/expected entry/);
+  });
+
+  test("fails when the expected entry is entirely missing from the plugins list", async () => {
+    const markerPath = join(proofRoot, "proof-missing-entry.marker");
+    await writeFile(markerPath, MARKER);
+
+    const result = await checkPluginLoadProof({
+      exitCode: 0,
+      stdout: "opencode version: 1.18.16\nplugins:\n",
+      stderr: "",
+      expectedEntry: ENTRY,
+      markerPath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/expected entry/);
+  });
+
+  test("fails on nonzero exit even when entry is listed and marker exists", async () => {
+    const markerPath = join(proofRoot, "proof-nonzero.marker");
+    await writeFile(markerPath, MARKER);
+
+    const result = await checkPluginLoadProof({
+      exitCode: 3,
+      stdout: LISTED,
+      stderr: "",
+      expectedEntry: ENTRY,
+      markerPath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/exit/);
+  });
+
+  test("fails when the marker is absent even with entry listed, exit 0, and no errors", async () => {
+    const markerPath = join(proofRoot, "proof-no-marker.marker");
+
+    const result = await checkPluginLoadProof({
+      exitCode: 0,
+      stdout: LISTED,
+      stderr: "",
+      expectedEntry: ENTRY,
+      markerPath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/marker/);
+  });
+
+  test("fails when the marker content differs from the fixed contract", async () => {
+    const markerPath = join(proofRoot, "proof-bad-content.marker");
+    await writeFile(markerPath, "different content\n");
+
+    const result = await checkPluginLoadProof({
+      exitCode: 0,
+      stdout: LISTED,
+      stderr: "",
+      expectedEntry: ENTRY,
+      markerPath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/marker/);
+  });
+});
+
 describe("formatHashLine", () => {
   test("renders ABSENT distinctly from any present digest", () => {
     const line = formatHashLine("/tmp/config.jsonc", "ABSENT");
@@ -248,27 +360,5 @@ describe("formatHashLine", () => {
     expect(line).toContain("/tmp/config.jsonc");
     expect(line).toContain(digest);
     expect(line).not.toContain("ABSENT");
-  });
-});
-
-describe("inspectPluginLoad", () => {
-  test("reports clean when no load error appears and the plugin is listed", () => {
-    const result = inspectPluginLoad("opencode version: 1.18.16\nplugins:\n- file:///tmp/p/plugin.js", "noise only", true);
-    expect(result.clean).toBe(true);
-    expect(result.loadError).toBeUndefined();
-  });
-
-  test("fails on the legacy-loader non-function export error even when exit was 0", () => {
-    const stderr =
-      'level=ERROR message="failed to load plugin" path=file:///tmp/p/index.js error="Plugin export is not a function"';
-    const result = inspectPluginLoad("plugins:\n- file:///tmp/p/index.js", stderr, true);
-    expect(result.clean).toBe(false);
-    expect(result.loadError).toMatch(/failed to load plugin|Plugin export is not a function/);
-  });
-
-  test("fails when the plugins list is missing even with no error", () => {
-    const result = inspectPluginLoad("no plugins here", "", false);
-    expect(result.clean).toBe(false);
-    expect(result.loadError).toMatch(/no plugins list/);
   });
 });
