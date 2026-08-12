@@ -1,5 +1,5 @@
 /**
- * Dedicated OpenCode plugin entry (Todo 6 blocker remediation).
+ * Dedicated OpenCode plugin entry (Todo 6 blocker + security remediation).
  *
  * OpenCode 1.18.16's legacy plugin loader (packages/opencode/src/plugin/
  * index.ts, getLegacyPlugins) iterates Object.values(module) and treats EVERY
@@ -14,34 +14,26 @@
  * function and no duplicate registration can occur.
  *
  * It also carries a narrow, opt-in load probe for the integration harness:
- * when ANTIGRAVITY_TASK_PLUGIN_MARKER (see plugin-probe.ts) is set — a path
- * the harness generates inside its isolated temp root — the factory writes a
- * fixed, non-secret marker atomically BEFORE delegating to the real plugin.
- * This proves the packed factory actually executed under OpenCode's loader —
+ * when BOTH ANTIGRAVITY_TASK_PLUGIN_ROOT and ANTIGRAVITY_TASK_PLUGIN_MARKER
+ * (see plugin-probe.ts) are set to a verified system-temp integration root
+ * and its exact direct-child marker path, the factory writes a fixed,
+ * non-secret marker atomically BEFORE delegating to the real plugin. This
+ * proves the packed factory actually executed under OpenCode's loader —
  * `debug info` lists configured plugin URLs even when no load occurred, so a
- * listed entry is not proof. Without the env var, zero probe I/O happens and
- * runtime behavior is byte-for-byte the real plugin. The entry module itself
- * still exports ONLY the factory function (loader-safe).
+ * listed entry is not proof. The root is validated (non-symlink directory
+ * under canonical tmpdir() with the harness prefix, marker = exact direct
+ * child) and NO filesystem write ever happens outside it; an invalid contract
+ * fails the plugin load with a bounded error. Without the env vars, zero
+ * probe I/O happens and runtime behavior is byte-for-byte the real plugin.
+ * The entry module itself still exports ONLY the factory function.
  */
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { AntigravityTaskPlugin } from "./index.js";
-import { PLUGIN_LOAD_MARKER_CONTENT, PLUGIN_LOAD_MARKER_ENV } from "./plugin-probe.js";
-
-function writeLoadMarker(markerPath: string): void {
-  mkdirSync(dirname(markerPath), { recursive: true });
-  const temp = `${markerPath}.tmp`;
-  writeFileSync(temp, PLUGIN_LOAD_MARKER_CONTENT, "utf8");
-  renameSync(temp, markerPath);
-}
+import { PLUGIN_LOAD_MARKER_ENV, PLUGIN_LOAD_ROOT_ENV, writeLoadMarker } from "./plugin-probe.js";
 
 export default async function antigravityTaskPluginProbe(
   input: Parameters<typeof AntigravityTaskPlugin>[0],
   options?: Parameters<typeof AntigravityTaskPlugin>[1],
 ) {
-  const markerPath = process.env[PLUGIN_LOAD_MARKER_ENV];
-  if (markerPath !== undefined && markerPath.length > 0) {
-    writeLoadMarker(markerPath);
-  }
+  writeLoadMarker(process.env[PLUGIN_LOAD_ROOT_ENV], process.env[PLUGIN_LOAD_MARKER_ENV]);
   return AntigravityTaskPlugin(input, options);
 }

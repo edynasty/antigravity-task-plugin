@@ -32,7 +32,7 @@
   * (documented limitation, no paid-model invocation).
  */
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -43,6 +43,7 @@ import {
   hashFileOrAbsent,
   loadPluginFactory,
   packOutputFilename,
+  withoutProbeEnv,
   writeOpenCodeConfig,
 } from "./helpers/integration-harness";
 
@@ -61,47 +62,49 @@ interface SpawnResult {
  * isolation); OpenCode children pass the exact allowlist env built by
  * buildIsolatedOpenCodeEnv and are never merged with process.env.
  */
-function run(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): SpawnResult {
+function run(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv = process.env): SpawnResult {
   const result = spawnSync(command, args, { cwd, env, encoding: "utf8" });
   return { exitCode: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-}
-
-function parentEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...process.env, ...extra };
 }
 
 interface IsolatedEnv {
   readonly configFile: string;
   readonly processEnv: NodeJS.ProcessEnv;
   readonly workDir: string;
+  readonly probeRootPath: string;
   readonly probeMarkerPath: string;
 }
 
 async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
   const home = join(tempRoot, "home");
-  const data = join(tempRoot, "data");
-  const cache = join(tempRoot, "cache");
-  const state = join(tempRoot, "state");
+  const configDir = join(home, ".config");
   const configFile = join(tempRoot, "opencode.json");
   const workDir = join(tempRoot, "work");
   const probeMarkerPath = join(tempRoot, "load-probe.marker");
+  const tmpDirOverride = await realpath(tmpdir());
   await Promise.all(
-    [home, data, cache, state, workDir, join(home, ".config", "opencode")].map((dir) => mkdir(dir, { recursive: true })),
-  );
-  return {
-    configFile,
-    workDir,
-    probeMarkerPath,
-    processEnv: buildIsolatedOpenCodeEnv(
-      { home, configDir: join(home, ".config"), configFile, data, cache, state, workDir, probeMarkerPath },
-      process.env,
+    [home, join(tempRoot, "data"), join(tempRoot, "cache"), join(tempRoot, "state"), workDir, join(configDir, "opencode")].map(
+      (dir) => mkdir(dir, { recursive: true }),
     ),
+  );
+  const seed = {
+    home,
+    configDir,
+    configFile,
+    data: join(tempRoot, "data"),
+    cache: join(tempRoot, "cache"),
+    state: join(tempRoot, "state"),
+    workDir,
+    probeRootPath: tempRoot,
+    probeMarkerPath,
+    tmpDirOverride,
   };
+  return { configFile, workDir, probeRootPath: tempRoot, probeMarkerPath, processEnv: buildIsolatedOpenCodeEnv(seed, process.env) };
 }
 
 async function extractTarball(tarball: string, destDir: string): Promise<void> {
   await mkdir(destDir, { recursive: true });
-  const result = run("tar", ["-xzf", tarball, "-C", destDir], REPO_ROOT, parentEnv());
+  const result = run("tar", ["-xzf", tarball, "-C", destDir], REPO_ROOT);
   if (result.exitCode !== 0) {
     throw new Error(`tar extraction failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
@@ -153,18 +156,18 @@ async function main(): Promise<number> {
     logHashReceipts("live-config-before", hashesBefore);
 
     // 0. Locate the opencode binary (CI installs opencode-ai@1.18.16 globally).
-    const which = run("which", ["opencode"], REPO_ROOT, parentEnv());
+    const which = run("which", ["opencode"], REPO_ROOT);
     if (which.exitCode !== 0) {
       throw new Error(`opencode CLI not found on PATH; install with: npm i -g opencode-ai@1.18.16 (${which.stderr.trim()})`);
     }
     opencodeBin = which.stdout.trim();
 
     // 1. Build + pack the repository into the temp pack dir.
-    const build = run("bun", ["run", "build"], REPO_ROOT, parentEnv());
+    const build = run("bun", ["run", "build"], REPO_ROOT);
     if (build.exitCode !== 0) {
       throw new Error(`bun run build failed (exit ${build.exitCode}): ${build.stderr.trim()}`);
     }
-    const pack = run("npm", ["pack", "--pack-destination", packDir], REPO_ROOT, parentEnv());
+    const pack = run("npm", ["pack", "--pack-destination", packDir], REPO_ROOT);
     if (pack.exitCode !== 0) {
       throw new Error(`npm pack failed (exit ${pack.exitCode}): ${pack.stderr.trim()}`);
     }
@@ -181,7 +184,9 @@ async function main(): Promise<number> {
     // 3. Import + instantiate the PACKED loader-safe entry: exact tool registration.
     //    The dedicated entry exports only the default factory (loader-safe);
     //    root named/default compatibility is covered by tests/plugin.test.ts.
-    const loaded = await loadPluginFactory(entryUrl);
+    //    The probe env vars (if hostile in the parent) are cleared for this
+    //    direct-import check — the probe only belongs in the isolated child.
+    const loaded = await withoutProbeEnv(() => loadPluginFactory(entryUrl));
     if (loaded.defaultIsFunction && loaded.toolKeys.length === 1 && loaded.toolKeys[0] === "antigravity-task") {
       pass("packed-tool-registration", `exactly ["antigravity-task"] via packed default factory`);
     } else {
@@ -190,9 +195,7 @@ async function main(): Promise<number> {
 
     // 3b. Pack metadata: the dedicated entry and its declaration are in the artifact.
     const packedEntry = join(installDir, "package", "dist", "plugin.js");
-    const packedDts = join(installDir, "package", "dist", "plugin.d.ts");
-    const entryInPack = (await Bun.file(packedEntry).exists()) && (await Bun.file(packedDts).exists());
-    if (entryInPack) {
+    if ((await Bun.file(packedEntry).exists()) && (await Bun.file(join(installDir, "package", "dist", "plugin.d.ts")).exists())) {
       pass("packed-entry-present", `dist/plugin.js + dist/plugin.d.ts in tarball`);
     } else {
       fail("packed-entry-present", `missing packed plugin entry ${packedEntry}`);
@@ -202,23 +205,19 @@ async function main(): Promise<number> {
     //    from the neutral temp cwd with the strictly isolated allowlist env.
     await writeOpenCodeConfig(dirname(env.configFile), [entryUrl]);
     const cfg = run(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
+    const resolvedPlugin = cfg.exitCode === 0 ? parseDebugConfig(cfg.stdout).plugin ?? [] : [];
     if (cfg.exitCode !== 0) {
       fail("debug-config-resolve", `exit ${cfg.exitCode}: ${cfg.stderr.trim()}`);
+    } else if (resolvedPlugin.includes(entryUrl)) {
+      pass("debug-config-resolve", `resolved plugin spec present (exit 0)`);
     } else {
-      const plugin = parseDebugConfig(cfg.stdout).plugin ?? [];
-      if (plugin.includes(entryUrl)) {
-        pass("debug-config-resolve", `resolved plugin spec present (exit 0)`);
-      } else {
-        fail("debug-config-resolve", `plugin spec missing from resolved config: ${JSON.stringify(plugin)}`);
-      }
+      fail("debug-config-resolve", `plugin spec missing from resolved config: ${JSON.stringify(resolvedPlugin)}`);
     }
 
-    // 5. Real load-bearing proof: `debug info --print-logs --log-level DEBUG`
-    //    actually invokes the packed plugin factory under the legacy loader.
-    //    `debug info` prints configured plugin URLs even when no load occurred
-    //    and exits 0, so listing alone is NOT proof — the opt-in marker file
-    //    proves the factory body executed. checkPluginLoadProof gates on
-    //    exitCode 0 + exact expected entry + marker content + no loader errors.
+    // 5. Real load-bearing proof: `debug info` invokes the packed factory under
+    //    the legacy loader. Listing alone is NOT proof (the CLI prints configured
+    //    URLs even when no load occurred); checkPluginLoadProof gates on exit 0 +
+    //    exact entry + marker content + no loader errors.
     const info = run(opencodeBin, ["--print-logs", "--log-level", "DEBUG", "debug", "info"], env.workDir, env.processEnv);
     const proof = await checkPluginLoadProof({
       exitCode: info.exitCode,
@@ -253,7 +252,7 @@ async function main(): Promise<number> {
     // 8. NEGATIVE B: importing a definitely nonexistent plugin spec fails load.
     const missingSpec = pathToFileURL(join(tempRoot, "definitely-missing-plugin.ts")).href;
     try {
-      await loadPluginFactory(missingSpec);
+      await withoutProbeEnv(() => loadPluginFactory(missingSpec));
       fail("negative-missing-plugin", `import of ${missingSpec} unexpectedly succeeded`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

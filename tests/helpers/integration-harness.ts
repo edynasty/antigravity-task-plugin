@@ -10,13 +10,13 @@ import { createHash } from "node:crypto";
 import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { PLUGIN_LOAD_MARKER_CONTENT, PLUGIN_LOAD_MARKER_ENV } from "../../src/plugin-probe.js";
+import { PLUGIN_LOAD_MARKER_CONTENT, PLUGIN_LOAD_MARKER_ENV, PLUGIN_LOAD_ROOT_ENV } from "../../src/plugin-probe.js";
 
 /** Marker for a config file that does not exist (distinct from any digest). */
 export const ABSENT = "ABSENT";
 
 /** Locale/system vars a CLI child may need; carried verbatim when present. */
-const PASSTHROUGH_VARS = ["PATH", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ"] as const;
+const PASSTHROUGH_VARS = ["PATH", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"] as const;
 
 /** Explicit allowlist isolation flags for OpenCode child processes. */
 const ISOLATION_FLAGS = [
@@ -34,16 +34,19 @@ export interface OpenCodeEnvSeed {
   readonly cache: string;
   readonly state: string;
   readonly workDir: string;
+  readonly probeRootPath?: string;
   readonly probeMarkerPath?: string;
+  readonly tmpDirOverride?: string;
 }
 
 /**
  * Build the strictly isolated environment for an OpenCode child process.
  * Returns a fresh object containing ONLY the seed paths, the four isolation
  * flags forced to "1", passthrough locale/system vars from the parent, and —
- * when the harness opts in — the single probe marker env var. Never
- * OPENCODE_PURE, never OPENCODE_CONFIG_CONTENT, never credential-like or
- * inherited config-path values.
+ * when the harness opts in — the probe root+marker env vars. The probe vars
+ * are NEVER inherited from the parent: both come from the generated seed.
+ * Never OPENCODE_PURE, never OPENCODE_CONFIG_CONTENT, never credential-like
+ * or inherited config-path values.
  */
 export function buildIsolatedOpenCodeEnv(seed: OpenCodeEnvSeed, parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const child: NodeJS.ProcessEnv = {
@@ -57,8 +60,12 @@ export function buildIsolatedOpenCodeEnv(seed: OpenCodeEnvSeed, parentEnv: NodeJ
   for (const flag of ISOLATION_FLAGS) {
     child[flag] = "1";
   }
-  if (seed.probeMarkerPath !== undefined) {
+  if (seed.probeRootPath !== undefined && seed.probeMarkerPath !== undefined) {
+    child[PLUGIN_LOAD_ROOT_ENV] = seed.probeRootPath;
     child[PLUGIN_LOAD_MARKER_ENV] = seed.probeMarkerPath;
+  }
+  if (seed.tmpDirOverride !== undefined) {
+    child["TMPDIR"] = seed.tmpDirOverride;
   }
   for (const key of PASSTHROUGH_VARS) {
     const value = parentEnv[key];
@@ -67,6 +74,32 @@ export function buildIsolatedOpenCodeEnv(seed: OpenCodeEnvSeed, parentEnv: NodeJ
     }
   }
   return child;
+}
+
+/**
+ * Run `body` with the probe env vars cleared (save/restore). The probe root
+ * and marker belong ONLY in the isolated child env; a hostile parent value
+ * must never affect a direct in-process import/instantiation of the plugin.
+ */
+export async function withoutProbeEnv<T>(body: () => Promise<T>): Promise<T> {
+  const previousRoot = process.env[PLUGIN_LOAD_ROOT_ENV];
+  const previousMarker = process.env[PLUGIN_LOAD_MARKER_ENV];
+  delete process.env[PLUGIN_LOAD_ROOT_ENV];
+  delete process.env[PLUGIN_LOAD_MARKER_ENV];
+  try {
+    return await body();
+  } finally {
+    if (previousRoot === undefined) {
+      delete process.env[PLUGIN_LOAD_ROOT_ENV];
+    } else {
+      process.env[PLUGIN_LOAD_ROOT_ENV] = previousRoot;
+    }
+    if (previousMarker === undefined) {
+      delete process.env[PLUGIN_LOAD_MARKER_ENV];
+    } else {
+      process.env[PLUGIN_LOAD_MARKER_ENV] = previousMarker;
+    }
+  }
 }
 
 /** Render a config-file hash receipt: path + 64-hex digest, or ABSENT. */
