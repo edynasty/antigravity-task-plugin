@@ -56,6 +56,36 @@ export const DEFAULT_MAX_STDOUT_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_MAX_STDERR_BYTES = 64 * 1024;
 
 /**
+ * Bound between SIGKILL and forced settlement. A direct child can exit while
+ * a descendant keeps the stdio pipes open, so the child 'close' event may
+ * never arrive; after this window runAgy destroys the pipes and settles with
+ * the original termination kind and exit { exitCode: null, signal: null }
+ * (meaning the direct child's exit was never observed).
+ */
+export const DEFAULT_CLOSE_WATCH_MS = 1_000;
+
+export type TerminationKind = Exclude<ProcessErrorKind, "spawn-failed">;
+
+export function terminationMessage(kind: TerminationKind, pid: number, exit: ProcessExit): string {
+  const detail =
+    exit.signal === null && exit.exitCode === null
+      ? "close never observed after forced pipe teardown"
+      : exit.signal !== null
+        ? `signal ${exit.signal}`
+        : `exit code ${String(exit.exitCode)}`;
+  switch (kind) {
+    case "timeout":
+      return `agy run (pid ${pid}) exceeded the host timeout and was terminated (${detail})`;
+    case "aborted":
+      return `agy run (pid ${pid}) was aborted and terminated (${detail})`;
+    case "stdout-overflow":
+      return `agy run (pid ${pid}) exceeded the stdout capture limit and was terminated (${detail})`;
+    case "stderr-overflow":
+      return `agy run (pid ${pid}) exceeded the stderr capture limit and was terminated (${detail})`;
+  }
+}
+
+/**
  * Host watchdog margin over the agy CLI `--print-timeout`: Todo 5 should pass
  * `hostTimeoutMs = timeoutSeconds * 1000 + HOST_GRACE_MS` so the CLI's own
  * timeout error surfaces as a real result instead of being preempted by the

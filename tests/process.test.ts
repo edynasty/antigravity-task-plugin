@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { buildArgv } from "../src/args";
-import { resolveAgy, runAgy, type SpawnOptions } from "../src/process";
+import { resolveAgy, runAgy } from "../src/process";
 import { ResolveError } from "../src/process-types";
 import {
   PROCESS_FIXTURE_PATH,
@@ -10,6 +10,7 @@ import {
   fixtureEnv,
   makeCountingSignal,
   makeExecutableAgy,
+  makeSpawnOptions,
   makeTempDir,
   readPidFile,
   readRecordedInvocation,
@@ -26,47 +27,6 @@ function captureResolveError(fn: () => string): ResolveError | null {
     return null;
   }
   return null;
-}
-
-interface SpawnOverrides {
-  readonly scenario?: string;
-  readonly signal?: AbortSignal;
-  readonly hostTimeoutMs?: number;
-  readonly terminateGraceMs?: number;
-  readonly maxStdoutBytes?: number;
-  readonly maxStderrBytes?: number;
-  readonly exitCode?: string;
-  readonly stderrLines?: string;
-  readonly stdoutLines?: string;
-  readonly envProbe?: string;
-  readonly recordPath?: string;
-}
-
-async function makeSpawnOptions(
-  overrides: SpawnOverrides,
-): Promise<{ readonly options: SpawnOptions; readonly pidPath: string; readonly dir: string }> {
-  const dir = await makeTempDir();
-  const pidPath = join(dir, "child.pid");
-  const { path } = await makeExecutableAgy();
-  const options: SpawnOptions = {
-    argv: [path, "fixture-task"],
-    cwd: dir,
-    env: fixtureEnv({
-      scenario: overrides.scenario ?? "record",
-      pidPath,
-      ...(overrides.recordPath !== undefined ? { recordPath: overrides.recordPath } : {}),
-      ...(overrides.exitCode !== undefined ? { exitCode: overrides.exitCode } : {}),
-      ...(overrides.stderrLines !== undefined ? { stderrLines: overrides.stderrLines } : {}),
-      ...(overrides.stdoutLines !== undefined ? { stdoutLines: overrides.stdoutLines } : {}),
-      ...(overrides.envProbe !== undefined ? { envProbe: overrides.envProbe } : {}),
-    }),
-    signal: overrides.signal ?? new AbortController().signal,
-    hostTimeoutMs: overrides.hostTimeoutMs ?? 5_000,
-    ...(overrides.terminateGraceMs !== undefined ? { terminateGraceMs: overrides.terminateGraceMs } : {}),
-    ...(overrides.maxStdoutBytes !== undefined ? { maxStdoutBytes: overrides.maxStdoutBytes } : {}),
-    ...(overrides.maxStderrBytes !== undefined ? { maxStderrBytes: overrides.maxStderrBytes } : {}),
-  };
-  return { options, pidPath, dir };
 }
 
 describe("resolveAgy executable discovery", () => {
@@ -130,7 +90,7 @@ describe("runAgy spawn and capture", () => {
     expect(recorded.argv).toEqual([PROCESS_FIXTURE_PATH, ...argv]);
     expect(recorded.cwd).toBe(dir);
     expect(recorded.envProbe).toBe("probe-value");
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("stderr capture with nonzero exit and exact exit code", async () => {
@@ -142,7 +102,7 @@ describe("runAgy spawn and capture", () => {
     expect(result.stderr).toContain("process-fixture diagnostic 1");
     expect(result.stderr).toContain("process-fixture diagnostic 2");
     expect(result.stdoutChunks.join("")).toBe("");
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("stdout chunks are collected and joined losslessly", async () => {
@@ -152,7 +112,7 @@ describe("runAgy spawn and capture", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdoutChunks.join("")).toBe("process-fixture stdout line 1\nprocess-fixture stdout line 2\nprocess-fixture stdout line 3\n");
     expect(result.stdoutBytes).toBeGreaterThan(0);
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("missing cwd is a typed spawn-failed", async () => {
@@ -176,7 +136,7 @@ describe("runAgy spawn and capture", () => {
     const pid = await readPidFile(pidPath);
     expect(result.exitCode).toBeNull();
     expect(result.signal).toBe("SIGTERM");
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("a pre-aborted signal rejects aborted without spawning", async () => {
@@ -195,7 +155,7 @@ describe("runAgy timeout, abort and cleanup", () => {
     const settlement = expectProcessErrorKind(promise, "timeout");
     const pid = await readPidFile(pidPath);
     await settlement;
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("abort on a hanging child rejects aborted and reaps the exact PID", async () => {
@@ -206,7 +166,7 @@ describe("runAgy timeout, abort and cleanup", () => {
     const pid = await readPidFile(pidPath);
     controller.abort();
     await settlement;
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("SIGTERM-ignoring child is escalated to SIGKILL after the grace period", async () => {
@@ -215,7 +175,7 @@ describe("runAgy timeout, abort and cleanup", () => {
     const settlement = expectProcessErrorKind(promise, "timeout");
     const pid = await readPidFile(pidPath);
     await settlement;
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("repeated aborts are idempotent: exactly one aborted rejection, child reaped", async () => {
@@ -227,7 +187,7 @@ describe("runAgy timeout, abort and cleanup", () => {
     controller.abort();
     controller.abort();
     await settlement;
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("abort racing close: abort after clean completion is a no-op", async () => {
@@ -254,7 +214,7 @@ describe("runAgy bounded output", () => {
     const settlement = expectProcessErrorKind(promise, "stdout-overflow");
     const pid = await readPidFile(pidPath);
     await settlement;
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 
   test("stderr overflow rejects with stderr-overflow and reaps the child", async () => {
@@ -263,6 +223,6 @@ describe("runAgy bounded output", () => {
     const settlement = expectProcessErrorKind(promise, "stderr-overflow");
     const pid = await readPidFile(pidPath);
     await settlement;
-    assertProcessGone(pid);
+    await assertProcessGone(pid);
   });
 });

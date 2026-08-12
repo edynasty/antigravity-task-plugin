@@ -13,11 +13,15 @@
  *   hang        -> writes one line then waits; SIGTERM -> 143, SIGINT -> 130
  *   ignore-term -> writes one line then waits; SIGTERM is ignored (SIGKILL only)
  *   signal-term -> kills itself with SIGTERM so the parent sees code null + signal
+ *   pipe-hold   -> spawns a descendant that holds stdout/stderr open, records both
+ *                  PIDs, then exits 0; the descendant (sh -> sleep) outlives it
  * Every scenario writes its own PID to AGY_PID_PATH first.
  */
+import { spawn } from "node:child_process";
 import { writeFileSync, writeSync } from "node:fs";
 import process from "node:process";
 import {
+  CHILD_PID_PATH_ENV,
   ENV_PROBE_ENV,
   EXIT_CODE_ENV,
   PID_PATH_ENV,
@@ -27,7 +31,7 @@ import {
   STDOUT_LINES_ENV,
 } from "./process-env";
 
-const SCENARIO_VALUES = ["record", "stderr", "output", "hang", "ignore-term", "signal-term"] as const;
+const SCENARIO_VALUES = ["record", "stderr", "output", "hang", "ignore-term", "signal-term", "pipe-hold"] as const;
 type Scenario = (typeof SCENARIO_VALUES)[number];
 
 const SCENARIO_SET: ReadonlySet<string> = new Set<string>(SCENARIO_VALUES);
@@ -93,6 +97,22 @@ function runSignalTerm(): void {
   process.kill(process.pid, "SIGTERM");
 }
 
+function runPipeHold(): void {
+  process.on("SIGTERM", () => process.exit(143));
+  process.on("SIGINT", () => process.exit(130));
+  writePidFile();
+  const childPidPath = process.env[CHILD_PID_PATH_ENV];
+  if (childPidPath !== undefined) {
+    const descendant = spawn(
+      "/bin/sh",
+      ["-c", `echo $$ > ${JSON.stringify(childPidPath)}; exec sleep 60`],
+      { stdio: ["ignore", "inherit", "inherit"] },
+    );
+    descendant.unref();
+  }
+  process.exit(0);
+}
+
 function main(): void {
   const raw = process.env[PROC_SCENARIO_ENV] ?? "record";
   if (!isScenario(raw)) {
@@ -117,6 +137,9 @@ function main(): void {
       break;
     case "signal-term":
       runSignalTerm();
+      break;
+    case "pipe-hold":
+      runPipeHold();
       break;
   }
 }

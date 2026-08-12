@@ -11,3 +11,4 @@ export const EXIT_CODE_ENV = "AGY_EXIT_CODE";
 export const STDERR_LINES_ENV = "AGY_STDERR_LINES";
 export const STDOUT_LINES_ENV = "AGY_STDOUT_LINES";
 export const ENV_PROBE_ENV = "AGY_ENV_PROBE";
+export const CHILD_PID_PATH_ENV = "AGY_CHILD_PID_PATH";

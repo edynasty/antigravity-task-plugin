@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isRecord, withTimeout } from "./fake-agy-harness";
 import {
+  CHILD_PID_PATH_ENV,
   ENV_PROBE_ENV,
   EXIT_CODE_ENV,
   PID_PATH_ENV,
@@ -13,7 +14,8 @@ import {
   STDERR_LINES_ENV,
   STDOUT_LINES_ENV,
 } from "../fixtures/process-env";
-import { ProcessError, type ProcessErrorKind, type ProcessResult } from "../../src/process-types";
+import { ProcessError, type ProcessErrorKind, type ProcessExit, type ProcessResult } from "../../src/process-types";
+import type { SpawnOptions } from "../../src/process";
 
 export const PROCESS_FIXTURE_PATH = resolve(import.meta.dir, "..", "fixtures", "process-fixture.ts");
 
@@ -39,6 +41,7 @@ export interface FixtureEnvOptions {
   readonly stderrLines?: string;
   readonly stdoutLines?: string;
   readonly envProbe?: string;
+  readonly childPidPath?: string;
 }
 
 export function fixtureEnv(options: FixtureEnvOptions): Record<string, string> {
@@ -60,6 +63,9 @@ export function fixtureEnv(options: FixtureEnvOptions): Record<string, string> {
   }
   if (options.envProbe !== undefined) {
     env[ENV_PROBE_ENV] = options.envProbe;
+  }
+  if (options.childPidPath !== undefined) {
+    env[CHILD_PID_PATH_ENV] = options.childPidPath;
   }
   return env;
 }
@@ -132,16 +138,31 @@ export async function readPidFile(pidPath: string, deadlineMs = 2_000): Promise<
   throw new Error(`pid file never appeared with a valid pid: ${pidPath}`);
 }
 
-export function assertProcessGone(pid: number): void {
+export async function assertProcessGone(pid: number, deadlineMs = 2_000): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    await delayMs(10);
+  }
+  throw new Error(`process ${pid} is still alive after runAgy settled`);
+}
+
+export function killProcess(pid: number): void {
   try {
-    process.kill(pid, 0);
+    process.kill(pid, "SIGKILL");
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") {
       return;
     }
     throw error;
   }
-  throw new Error(`process ${pid} is still alive after runAgy settled`);
 }
 
 export interface CountingSignal {
@@ -180,14 +201,72 @@ export function makeCountingSignal(): CountingSignal {
   };
 }
 
-export async function expectProcessErrorKind(promise: Promise<ProcessResult>, kind: ProcessErrorKind): Promise<void> {
+export interface SpawnOverrides {
+  readonly scenario?: string;
+  readonly signal?: AbortSignal;
+  readonly hostTimeoutMs?: number;
+  readonly terminateGraceMs?: number;
+  readonly closeWatchMs?: number;
+  readonly maxStdoutBytes?: number;
+  readonly maxStderrBytes?: number;
+  readonly exitCode?: string;
+  readonly stderrLines?: string;
+  readonly stdoutLines?: string;
+  readonly envProbe?: string;
+  readonly recordPath?: string;
+  readonly childPidName?: string;
+}
+
+export async function makeSpawnOptions(
+  overrides: SpawnOverrides,
+): Promise<{
+  readonly options: SpawnOptions;
+  readonly pidPath: string;
+  readonly dir: string;
+  readonly childPidPath: string | null;
+}> {
+  const dir = await makeTempDir();
+  const pidPath = join(dir, "child.pid");
+  const childPidPath = overrides.childPidName === undefined ? null : join(dir, overrides.childPidName);
+  const { path } = await makeExecutableAgy();
+  const options: SpawnOptions = {
+    argv: [path, "fixture-task"],
+    cwd: dir,
+    env: fixtureEnv({
+      scenario: overrides.scenario ?? "record",
+      pidPath,
+      ...(overrides.recordPath !== undefined ? { recordPath: overrides.recordPath } : {}),
+      ...(overrides.exitCode !== undefined ? { exitCode: overrides.exitCode } : {}),
+      ...(overrides.stderrLines !== undefined ? { stderrLines: overrides.stderrLines } : {}),
+      ...(overrides.stdoutLines !== undefined ? { stdoutLines: overrides.stdoutLines } : {}),
+      ...(overrides.envProbe !== undefined ? { envProbe: overrides.envProbe } : {}),
+      ...(childPidPath !== null ? { childPidPath } : {}),
+    }),
+    signal: overrides.signal ?? new AbortController().signal,
+    hostTimeoutMs: overrides.hostTimeoutMs ?? 5_000,
+    ...(overrides.terminateGraceMs !== undefined ? { terminateGraceMs: overrides.terminateGraceMs } : {}),
+    ...(overrides.closeWatchMs !== undefined ? { closeWatchMs: overrides.closeWatchMs } : {}),
+    ...(overrides.maxStdoutBytes !== undefined ? { maxStdoutBytes: overrides.maxStdoutBytes } : {}),
+    ...(overrides.maxStderrBytes !== undefined ? { maxStderrBytes: overrides.maxStderrBytes } : {}),
+  };
+  return { options, pidPath, dir, childPidPath };
+}
+
+export async function expectProcessErrorKind(
+  promise: Promise<ProcessResult>,
+  kind: ProcessErrorKind,
+  expectedExit?: ProcessExit | null,
+): Promise<ProcessError> {
   try {
     const result = await withTimeout(promise, 5_000, `expected ProcessError(${kind}) but runAgy never settled`);
     throw new Error(`expected ProcessError(${kind}) but runAgy resolved with pid ${result.pid}`);
   } catch (error) {
     if (error instanceof ProcessError) {
       expect(error.kind).toBe(kind);
-      return;
+      if (expectedExit !== undefined) {
+        expect(error.exit).toEqual(expectedExit);
+      }
+      return error;
     }
     throw error;
   }
