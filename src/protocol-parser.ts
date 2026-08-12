@@ -110,6 +110,7 @@ export class NdjsonStreamParser {
       const first = text[0];
       if (first !== undefined && isLowSurrogate(first)) {
         this.pending.append(encoder.encode(this.pendingHighSurrogate + first));
+        this.pendingHighSurrogate = null;
         text = text.slice(1);
       } else {
         this.flushStringSeam();

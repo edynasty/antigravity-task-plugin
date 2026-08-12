@@ -36,6 +36,55 @@ describe("string chunk surrogate seam", () => {
       }
     }
   });
+
+  test("a 2-chunk surrogate split yields exact text AND zero diagnostics", () => {
+    const stream = `${initEvent()}\n${stepEvent({ stepIndex: 0, state: "DONE", textDelta: "a\u{1F600}b" })}\n${resultEvent({ status: "SUCCESS", response: "" })}\n`;
+    const split = stream.indexOf("\u{1F600}");
+    const parser = new NdjsonStreamParser();
+    parser.push(stream.slice(0, split + 1)); // ends on the high surrogate half
+    parser.push(stream.slice(split + 1)); // begins on the low surrogate half
+    const outcome = parser.finish();
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.text).toBe("a\u{1F600}b");
+      expect(outcome.diagnostics.length).toBe(0);
+    }
+  });
+
+  test("a 3-chunk split across and after a surrogate pair equals the all-at-once outcome", () => {
+    const stream = `${initEvent()}\n${stepEvent({ stepIndex: 0, state: "DONE", textDelta: "a\u{1F600}b" })}\n${resultEvent({ status: "SUCCESS", response: "" })}\n`;
+    const split = stream.indexOf("\u{1F600}");
+    const parser = new NdjsonStreamParser();
+    parser.push(stream.slice(0, split + 1)); // high surrogate half
+    parser.push(stream.slice(split + 1, split + 2)); // low surrogate half alone
+    parser.push(stream.slice(split + 2)); // rest of the stream
+    const outcome = parser.finish();
+    expect(outcome).toEqual(parse(stream));
+    if (outcome.kind === "success") {
+      expect(outcome.text).not.toContain("\uFFFD");
+    }
+  });
+
+  test("surrogate handling does not consume a 1-diagnostic budget before a real malformed line", () => {
+    const stream = `${initEvent()}\n${stepEvent({ stepIndex: 0, state: "DONE", textDelta: "a\u{1F600}b" })}\n`;
+    const split = stream.indexOf("\u{1F600}");
+    const parser = new NdjsonStreamParser({ maxDiagnostics: 1 });
+    parser.push(stream.slice(0, split + 1));
+    parser.push(stream.slice(split + 1));
+    parser.push("bad line\n");
+    parser.push(resultEvent({ status: "SUCCESS", response: "" }));
+    const outcome = parser.finish();
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.diagnostics.length).toBe(1);
+      expect(outcome.droppedDiagnostics).toBe(0);
+      const only = outcome.diagnostics[0];
+      if (only?.kind === "malformed-line") {
+        expect(only.context).toBe("bad line");
+      }
+      expect(outcome.text).toBe("a\u{1F600}b");
+    }
+  });
 });
 
 describe("pending-line bound applies to complete lines too", () => {
