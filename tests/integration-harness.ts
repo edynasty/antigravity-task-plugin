@@ -3,8 +3,12 @@
  *
  * Runs with zero user/project config bleed: a freshly mkdtemp'd root owns the
  * HOME, OPENCODE_CONFIG, XDG data/cache/state dirs, the pack output, the
- * extracted install, and the plugin node_modules link. It proves the strongest
- * no-LLM OpenCode story available on 1.18.16:
+ * extracted install, and the plugin node_modules link. OpenCode child
+ * processes get a strictly allowlisted environment (temp paths + isolation
+ * flags + locale passthrough only) and run from a neutral temp cwd, so
+ * inherited OPENCODE vars, XDG/HOME/credential values, project config, default
+ * plugins, and external/Claude skills cannot bleed into the isolated test.
+ * It proves the strongest no-LLM OpenCode story available on 1.18.16:
  *
  *   1. the packed artifact imports and instantiates with exactly one tool
  *      ("antigravity-task"), via default and named factory exports;
@@ -15,7 +19,8 @@
  *      nonzero with an actionable schema error, and importing a definitely
  *      nonexistent plugin spec fails with an actionable load error;
  *   5. the live config files (~/.config/opencode/opencode.jsonc and
- *      ~/.omo/omo.jsonc) are byte-identical before and after every run.
+ *      ~/.omo/omo.jsonc) hash unchanged before/after, each present hash or
+ *      ABSENT logged distinctly.
  *
  * OpenCode CLI cannot enumerate a plugin's tools without a session/LLM, so
  * tool registration is proven by importing and instantiating the packed
@@ -26,7 +31,14 @@ import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ABSENT, hashFileOrAbsent, loadPluginFactory, packOutputFilename, writeOpenCodeConfig } from "./helpers/integration-harness";
+import {
+  buildIsolatedOpenCodeEnv,
+  formatHashLine,
+  hashFileOrAbsent,
+  loadPluginFactory,
+  packOutputFilename,
+  writeOpenCodeConfig,
+} from "./helpers/integration-harness";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const PACKED_ENTRY = join("package", "dist", "index.js");
@@ -38,14 +50,22 @@ interface SpawnResult {
   readonly stderr: string;
 }
 
-function run(command: string, args: readonly string[], cwd: string, env?: NodeJS.ProcessEnv): SpawnResult {
+/** Normal build/pack/tooling commands: inherit the parent env (repo-local, no isolation). */
+function runNormal(command: string, args: readonly string[], cwd: string, env?: NodeJS.ProcessEnv): SpawnResult {
   const result = spawnSync(command, args, { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
+  return { exitCode: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+/** Isolated OpenCode child: the EXACT allowlist env, never merged with process.env. */
+function runIsolated(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): SpawnResult {
+  const result = spawnSync(command, args, { cwd, env, encoding: "utf8" });
   return { exitCode: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
 interface IsolatedEnv {
   readonly configFile: string;
   readonly processEnv: NodeJS.ProcessEnv;
+  readonly workDir: string;
 }
 
 async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
@@ -54,27 +74,26 @@ async function makeIsolatedEnv(tempRoot: string): Promise<IsolatedEnv> {
   const cache = join(tempRoot, "cache");
   const state = join(tempRoot, "state");
   const configFile = join(tempRoot, "opencode.json");
+  const workDir = join(tempRoot, "work");
   await mkdir(home, { recursive: true });
   await mkdir(data, { recursive: true });
   await mkdir(cache, { recursive: true });
   await mkdir(state, { recursive: true });
+  await mkdir(workDir, { recursive: true });
   await mkdir(join(home, ".config", "opencode"), { recursive: true });
   return {
     configFile,
-    processEnv: {
-      HOME: home,
-      OPENCODE_CONFIG: configFile,
-      XDG_CONFIG_HOME: join(home, ".config"),
-      XDG_DATA_HOME: data,
-      XDG_CACHE_HOME: cache,
-      XDG_STATE_HOME: state,
-    },
+    workDir,
+    processEnv: buildIsolatedOpenCodeEnv(
+      { home, configDir: join(home, ".config"), configFile, data, cache, state, workDir },
+      process.env,
+    ),
   };
 }
 
 async function extractTarball(tarball: string, destDir: string): Promise<void> {
   await mkdir(destDir, { recursive: true });
-  const result = run("tar", ["-xzf", tarball, "-C", destDir], REPO_ROOT);
+  const result = runNormal("tar", ["-xzf", tarball, "-C", destDir], REPO_ROOT);
   if (result.exitCode !== 0) {
     throw new Error(`tar extraction failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
@@ -112,26 +131,29 @@ async function main(): Promise<number> {
     const installDir = join(tempRoot, "install");
     await mkdir(packDir, { recursive: true });
 
-    // Live-config hash guard: capture before any OpenCode invocation.
+    // Live-config hash guard: capture before any OpenCode invocation. Absence
+    // is a valid state (ABSENT marker); only a change before/after is a failure.
     const hashesBefore = await hashLiveConfigs();
-    if (hashesBefore.includes(ABSENT)) {
-      const names = LIVE_CONFIG_FILES.map((file) => (hashesBefore[LIVE_CONFIG_FILES.indexOf(file)] === ABSENT ? file : "")).filter(Boolean);
-      fail("live-config-presence", `expected both live config files present, absent: ${names.join(", ")}`);
+    for (let index = 0; index < LIVE_CONFIG_FILES.length; index += 1) {
+      const hash = hashesBefore[index];
+      if (hash !== undefined) {
+        console.log(`[INFO] live-config-before ${formatHashLine(LIVE_CONFIG_FILES[index] ?? "?", hash)}`);
+      }
     }
 
     // 0. Locate the opencode binary (CI installs opencode-ai@1.18.16 globally).
-    const which = run("which", ["opencode"], REPO_ROOT);
+    const which = runNormal("which", ["opencode"], REPO_ROOT);
     if (which.exitCode !== 0) {
       throw new Error(`opencode CLI not found on PATH; install with: npm i -g opencode-ai@1.18.16 (${which.stderr.trim()})`);
     }
     opencodeBin = which.stdout.trim();
 
     // 1. Build + pack the repository into the temp pack dir.
-    const build = run("bun", ["run", "build"], REPO_ROOT);
+    const build = runNormal("bun", ["run", "build"], REPO_ROOT);
     if (build.exitCode !== 0) {
       throw new Error(`bun run build failed (exit ${build.exitCode}): ${build.stderr.trim()}`);
     }
-    const pack = run("npm", ["pack", "--pack-destination", packDir], REPO_ROOT);
+    const pack = runNormal("npm", ["pack", "--pack-destination", packDir], REPO_ROOT);
     if (pack.exitCode !== 0) {
       throw new Error(`npm pack failed (exit ${pack.exitCode}): ${pack.stderr.trim()}`);
     }
@@ -153,9 +175,10 @@ async function main(): Promise<number> {
       fail("packed-tool-registration", JSON.stringify(loaded));
     }
 
-    // 4. Config pointing at the packed module resolves under `opencode debug config`.
+    // 4. Config pointing at the packed module resolves under `opencode debug config`,
+    //    from the neutral temp cwd with the strictly isolated allowlist env.
     await writeOpenCodeConfig(dirname(env.configFile), [entryUrl]);
-    const cfg = run(opencodeBin, ["debug", "config"], REPO_ROOT, env.processEnv);
+    const cfg = runIsolated(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
     if (cfg.exitCode !== 0) {
       fail("debug-config-resolve", `exit ${cfg.exitCode}: ${cfg.stderr.trim()}`);
     } else {
@@ -168,7 +191,7 @@ async function main(): Promise<number> {
     }
 
     // 5. Startup resolves in the isolated env.
-    const startup = run(opencodeBin, ["debug", "startup"], REPO_ROOT, env.processEnv);
+    const startup = runIsolated(opencodeBin, ["debug", "startup"], env.workDir, env.processEnv);
     if (startup.exitCode === 0 && startup.stdout.trim().length > 0) {
       pass("debug-startup", `exit 0, timing printed`);
     } else {
@@ -177,7 +200,7 @@ async function main(): Promise<number> {
 
     // 6. NEGATIVE A: invalid plugin entry shape is rejected by `debug config` itself.
     await writeOpenCodeConfig(dirname(env.configFile), [42]);
-    const negA = run(opencodeBin, ["debug", "config"], REPO_ROOT, env.processEnv);
+    const negA = runIsolated(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
     if (negA.exitCode !== 0 && /Expected string \| array|plugin/i.test(negA.stderr)) {
       pass("negative-invalid-entry", `exit ${negA.exitCode}, actionable schema error`);
     } else {
@@ -200,9 +223,15 @@ async function main(): Promise<number> {
 
     // 8. Live-config hash guard: nothing touched after all success/failure runs.
     const hashesAfter = await hashLiveConfigs();
+    for (let index = 0; index < LIVE_CONFIG_FILES.length; index += 1) {
+      const hash = hashesAfter[index];
+      if (hash !== undefined) {
+        console.log(`[INFO] live-config-after ${formatHashLine(LIVE_CONFIG_FILES[index] ?? "?", hash)}`);
+      }
+    }
     const unchanged = hashesBefore.every((hash, index) => hash === hashesAfter[index]);
     if (unchanged) {
-      pass("live-config-unchanged", `both files byte-identical before/after`);
+      pass("live-config-unchanged", `before/after identical (present hashes or ABSENT)`);
     } else {
       const diffs = LIVE_CONFIG_FILES.map((file, index) => (hashesBefore[index] === hashesAfter[index] ? "" : file)).filter(Boolean);
       fail("live-config-unchanged", `changed: ${diffs.join(", ")}`);

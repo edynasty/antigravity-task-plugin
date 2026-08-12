@@ -14,6 +14,62 @@ import { pathToFileURL } from "node:url";
 /** Marker for a config file that does not exist (distinct from any digest). */
 export const ABSENT = "ABSENT";
 
+/** Locale/system vars a CLI child may need; carried verbatim when present. */
+const PASSTHROUGH_VARS = ["PATH", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ"] as const;
+
+/** Explicit allowlist isolation flags for OpenCode child processes. */
+const ISOLATION_FLAGS = [
+  "OPENCODE_DISABLE_PROJECT_CONFIG",
+  "OPENCODE_DISABLE_DEFAULT_PLUGINS",
+  "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+  "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+] as const;
+
+export interface OpenCodeEnvSeed {
+  readonly home: string;
+  readonly configDir: string;
+  readonly configFile: string;
+  readonly data: string;
+  readonly cache: string;
+  readonly state: string;
+  readonly workDir: string;
+}
+
+/**
+ * Build the strictly isolated environment for an OpenCode child process.
+ * Returns a fresh object containing ONLY the seed paths, the four isolation
+ * flags forced to "1", and passthrough locale/system vars from the parent —
+ * never OPENCODE_PURE, never OPENCODE_CONFIG_CONTENT, never credential-like
+ * or inherited config-path values.
+ */
+export function buildIsolatedOpenCodeEnv(seed: OpenCodeEnvSeed, parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {
+    HOME: seed.home,
+    OPENCODE_CONFIG: seed.configFile,
+    XDG_CONFIG_HOME: seed.configDir,
+    XDG_DATA_HOME: seed.data,
+    XDG_CACHE_HOME: seed.cache,
+    XDG_STATE_HOME: seed.state,
+  };
+  for (const flag of ISOLATION_FLAGS) {
+    child[flag] = "1";
+  }
+  for (const key of PASSTHROUGH_VARS) {
+    const value = parentEnv[key];
+    if (value !== undefined) {
+      child[key] = value;
+    }
+  }
+  return child;
+}
+
+/** Render a config-file hash receipt: path + 64-hex digest, or ABSENT. */
+export function formatHashLine(file: string, hash: string): string {
+  return `${file} ${hash}`;
+}
+
+/** sha256 hex digest of the file at `path`, or "ABSENT" when it does not exist. */
+
 export interface LoadedPlugin {
   readonly defaultIsFunction: boolean;
   readonly namedIsFunction: boolean;

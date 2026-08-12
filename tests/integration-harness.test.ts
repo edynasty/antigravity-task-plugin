@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  buildIsolatedOpenCodeEnv,
+  formatHashLine,
   hashFileOrAbsent,
   loadPluginFactory,
   packOutputFilename,
@@ -136,5 +138,114 @@ describe("integration harness helpers", () => {
 
       expect(loadPluginFactory(missing)).rejects.toThrow(/Cannot find module|no such file/i);
     });
+  });
+});
+
+describe("buildIsolatedOpenCodeEnv", () => {
+  const seed = {
+    home: "/tmp/h",
+    configDir: "/tmp/h/.config",
+    configFile: "/tmp/opencode.json",
+    data: "/tmp/d",
+    cache: "/tmp/c",
+    state: "/tmp/s",
+    workDir: "/tmp/w",
+  };
+
+  test("drops hostile inherited OPENCODE_* vars and config-path overrides", () => {
+    const parentEnv = {
+      OPENCODE_CONFIG_CONTENT: '{"model":"evil"}',
+      OPENCODE_CONFIG: "/evil/opencode.json",
+      OPENCODE_PURE: "1",
+      OPENCODE_DISABLE_PROJECT_CONFIG: "0",
+      HOME: "/evil/home",
+    };
+
+    const child = buildIsolatedOpenCodeEnv(seed, parentEnv);
+
+    expect(child["OPENCODE_CONFIG_CONTENT"]).toBeUndefined();
+    expect(child["OPENCODE_PURE"]).toBeUndefined();
+    expect(child["HOME"]).toBe(seed.home);
+    expect(child["OPENCODE_CONFIG"]).toBe(seed.configFile);
+    expect(child["OPENCODE_DISABLE_PROJECT_CONFIG"]).toBe("1");
+  });
+
+  test("strips hostile XDG/HOME values and credential-like env entirely", () => {
+    const parentEnv = {
+      HOME: "/evil/home",
+      XDG_CONFIG_HOME: "/evil/xdg",
+      XDG_DATA_HOME: "/evil/data",
+      XDG_CACHE_HOME: "/evil/cache",
+      XDG_STATE_HOME: "/evil/state",
+      OPENAI_API_KEY: "sk-evil-secret-value",
+      ANTHROPIC_API_KEY: "sk-ant-evil",
+      GITHUB_TOKEN: "ghp_evil",
+    };
+
+    const child = buildIsolatedOpenCodeEnv(seed, parentEnv);
+
+    expect(child["HOME"]).toBe(seed.home);
+    expect(child["XDG_CONFIG_HOME"]).toBe(seed.configDir);
+    expect(child["XDG_DATA_HOME"]).toBe(seed.data);
+    expect(child["XDG_CACHE_HOME"]).toBe(seed.cache);
+    expect(child["XDG_STATE_HOME"]).toBe(seed.state);
+    expect(child["OPENAI_API_KEY"]).toBeUndefined();
+    expect(child["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(child["GITHUB_TOKEN"]).toBeUndefined();
+  });
+
+  test("forces all four isolation disable flags to 1", () => {
+    const child = buildIsolatedOpenCodeEnv(seed, {
+      OPENCODE_DISABLE_PROJECT_CONFIG: "0",
+      OPENCODE_DISABLE_DEFAULT_PLUGINS: "0",
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: "0",
+      OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "0",
+    });
+
+    expect(child["OPENCODE_DISABLE_PROJECT_CONFIG"]).toBe("1");
+    expect(child["OPENCODE_DISABLE_DEFAULT_PLUGINS"]).toBe("1");
+    expect(child["OPENCODE_DISABLE_EXTERNAL_SKILLS"]).toBe("1");
+    expect(child["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"]).toBe("1");
+  });
+
+  test("carries only a sanitized PATH plus optional locale/system vars", () => {
+    const child = buildIsolatedOpenCodeEnv(seed, {
+      PATH: "/usr/bin:/bin",
+      TERM: "xterm-256color",
+      LANG: "en_US.UTF-8",
+      OTHER_LEGACY: "should-not-appear",
+    });
+
+    expect(child["PATH"]).toBe("/usr/bin:/bin");
+    expect(child["TERM"]).toBe("xterm-256color");
+    expect(child["LANG"]).toBe("en_US.UTF-8");
+    expect(child["OTHER_LEGACY"]).toBeUndefined();
+  });
+
+  test("returns a fresh object that never aliases the parent env", () => {
+    const parentEnv = { PATH: "/usr/bin:/bin" };
+
+    const child = buildIsolatedOpenCodeEnv(seed, parentEnv);
+
+    expect(child).not.toBe(parentEnv);
+    parentEnv["PATH"] = "/mutated";
+    expect(child["PATH"]).toBe("/usr/bin:/bin");
+  });
+});
+
+describe("formatHashLine", () => {
+  test("renders ABSENT distinctly from any present digest", () => {
+    const line = formatHashLine("/tmp/config.jsonc", "ABSENT");
+    expect(line).toContain("/tmp/config.jsonc");
+    expect(line).toContain("ABSENT");
+    expect(line).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  test("renders a present sha256 digest", () => {
+    const digest = "a".repeat(64);
+    const line = formatHashLine("/tmp/config.jsonc", digest);
+    expect(line).toContain("/tmp/config.jsonc");
+    expect(line).toContain(digest);
+    expect(line).not.toContain("ABSENT");
   });
 });
