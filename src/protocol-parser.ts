@@ -15,6 +15,7 @@ import { ByteAccumulator } from "./byte-accumulator.js";
 import { ProtocolState, normalizeOptions } from "./protocol-state.js";
 import { isRecord } from "./protocol-types.js";
 import type { ParserOutcome, ProtocolParserOptions } from "./protocol-types.js";
+import { redactCredentials } from "./redaction.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -27,21 +28,6 @@ function isHighSurrogate(unit: string): boolean {
 function isLowSurrogate(unit: string): boolean {
   const value = unit.charCodeAt(0);
   return value >= 0xdc00 && value <= 0xdfff;
-}
-
-/** Deterministic redaction of credential-like values inside diagnostic context. */
-const CREDENTIAL_PATTERNS: readonly RegExp[] = [
-  /\bsk-[A-Za-z0-9_-]{6,}\b/g,
-  /\bBearer\s+[A-Za-z0-9._~+\-/=]+/g,
-  /\b(?:api[_-]?key|apikey|token|secret)\s*[=:]\s*[A-Za-z0-9._~+\-/=]+/gi,
-];
-
-function redactCredentials(line: string): string {
-  let redacted = line;
-  for (const pattern of CREDENTIAL_PATTERNS) {
-    redacted = redacted.replace(pattern, "[REDACTED]");
-  }
-  return redacted;
 }
 
 export class NdjsonStreamParser {
