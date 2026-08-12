@@ -36,12 +36,20 @@ npm pack
 # Produces antigravity-task-plugin-0.0.0.tgz
 ```
 
+Install the tarball into your OpenCode environment:
+
+```bash
+npm install -g ./antigravity-task-plugin-0.0.0.tgz
+```
+
+Then reference the installed package in your config:
+
 ```jsonc
 // opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "./antigravity-task-plugin-0.0.0.tgz/plugin"
+    "antigravity-task-plugin/plugin"
   ]
 }
 ```
@@ -77,6 +85,70 @@ The plugin registers exactly one tool: `antigravity-task`.
 | `conversationId` | `string` | (optional) | Resume a specific conversation by id. Mutually exclusive with `continueConversation`. |
 | `continueConversation` | `boolean` | (optional) | Resume the most recent conversation. Mutually exclusive with `conversationId`. |
 | `sandbox` | `boolean` | (optional) | Restrict the run's terminal/shell access only. |
+
+## Manual omo tool and permission examples
+
+The plugin registers the `antigravity-task` tool. You can manually configure omo policies to control its usage. These are user-managed examples; the plugin never auto-writes permission policies.
+
+### Allow the tool unconditionally
+
+```jsonc
+// opencode.json
+{
+  "permission": {
+    "tools": {
+      "antigravity-task": "allow"
+    }
+  }
+}
+```
+
+### Deny the tool
+
+```jsonc
+// opencode.json
+{
+  "permission": {
+    "tools": {
+      "antigravity-task": "deny"
+    }
+  }
+}
+```
+
+### Ask for confirmation before each invocation
+
+```jsonc
+// opencode.json
+{
+  "permission": {
+    "tools": {
+      "antigravity-task": "ask"
+    }
+  }
+}
+```
+
+### Conditional permission based on arguments
+
+You can also set permissions based on tool arguments (requires omo policy engine support):
+
+```jsonc
+// Example: allow only plan mode
+{
+  "permission": {
+    "tools": {
+      "antigravity-task": {
+        "allow": {
+          "mode": "plan"
+        }
+      }
+    }
+  }
+}
+```
+
+These examples demonstrate the permission surface. Consult the omo documentation for advanced policy configurations.
 
 ## Execute vs plan mode
 
@@ -196,14 +268,14 @@ The agy CLI returned SUCCESS but with an empty `response` field. This can happen
 
 ### Status errors
 
-Non-SUCCESS statuses (ERROR, CANCELED, INTERRUPTED, INVALID, WAITING) return a failure metadata with the status and error detail. Check the agy CLI documentation for status semantics.
+Non-SUCCESS statuses (ERROR, CANCELED, INTERRUPTED, INVALID, WAITING, RUNNING) return a failure metadata with the status and error detail. Check the agy CLI documentation for status semantics.
 
 ## Verification
 
 ### Run the test suite
 
 ```bash
-bun test              # Unit + integration tests (172 tests)
+bun test              # Unit + integration tests
 bun run typecheck     # TypeScript strict mode
 bun run build         # Build to dist/
 ```
@@ -237,7 +309,7 @@ When enabled, the smoke:
 npm pack --dry-run --json
 ```
 
-The packed artifact includes only `dist/`, `README.md`, and `LICENSE`. Tests, evidence, and credentials are excluded.
+The packed artifact includes `dist/`, `README.md`, `LICENSE`, and `package.json`. Tests, evidence, and credentials are excluded.
 
 ## CI and live smoke
 

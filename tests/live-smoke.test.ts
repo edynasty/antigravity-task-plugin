@@ -65,7 +65,7 @@ describe("live smoke missing-path negative", () => {
 
     expect(result.status).toBe(1);
     const combined = `${result.stdout}\n${result.stderr}`;
-    expect(combined).toMatch(/AGY_PATH.*does not exist/);
+    expect(combined).toMatch(/agy executable does not exist/);
     expect(combined).not.toMatch(/sk-|Bearer|api_key|token=/i);
   });
 });
