@@ -105,7 +105,7 @@ The `antigravity-task` tool is invoked by OpenCode's LLM agent. Below are exampl
 
 This uses the default `mode=execute`, which allows agy to make changes to your workspace. Review the output before committing.
 
-### Explicit plan mode (no workspace modifications)
+### Explicit plan mode (planning without applying edits)
 
 ```json
 {

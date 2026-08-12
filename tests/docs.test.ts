@@ -111,14 +111,12 @@ describe("README argument table matches schema", () => {
   });
 
   test("argument defaults in README match the actual schema defaults", async () => {
-    const shape = antigravityTaskSchema.shape;
-    const timeoutDefault = shape.timeoutSeconds._def.defaultValue;
-    const modeDefault = shape.mode._def.defaultValue;
-    expect(timeoutDefault).toBe(300);
-    expect(modeDefault).toBe("execute");
+    const parsed = antigravityTaskSchema.parse({ task: "x" });
+    expect(parsed.timeoutSeconds).toBe(300);
+    expect(parsed.mode).toBe("execute");
     const readme = await readReadme();
-    expect(readme).toContain(String(timeoutDefault));
-    expect(readme).toContain(modeDefault);
+    expect(readme).toContain("300");
+    expect(readme).toContain("execute");
   });
 });
 
