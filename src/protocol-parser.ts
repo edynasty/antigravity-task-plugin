@@ -2,12 +2,14 @@
  * Incremental NDJSON parser for the official `agy` stream-json contract.
  *
  * Accepts arbitrary string/Uint8Array chunks (including UTF-8 code points
- * split across byte chunks), CRLF or LF line endings, blank lines, an
- * unterminated final line, unknown events/fields, and non-JSON stdout lines.
- * Completion is defined as exactly one terminal `result` event; only SUCCESS
- * is success. result.response wins over concatenated text_delta; result.usage
- * wins over summed per-step usage (each step_index counted once, last usage
- * wins). All output and diagnostic buffering is bounded by named constants.
+ * split across byte chunks and surrogate pairs split across string chunks),
+ * CRLF or LF line endings, blank lines, an unterminated final line, unknown
+ * events/fields, and non-JSON stdout lines. Completion is defined as exactly
+ * one terminal `result` event; only SUCCESS is success. result.response wins
+ * over concatenated text_delta; result.usage wins over summed per-step usage
+ * (each step_index counted once, last usage wins). Output, diagnostics and
+ * pending-line buffering are bounded by named constants, and diagnostic
+ * context is redacted for credential-like values before it is stored.
  */
 import { ByteAccumulator } from "./byte-accumulator.js";
 import { ProtocolState, normalizeOptions } from "./protocol-state.js";
@@ -17,11 +19,37 @@ import type { ParserOutcome, ProtocolParserOptions } from "./protocol-types.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+function isHighSurrogate(unit: string): boolean {
+  const value = unit.charCodeAt(0);
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(unit: string): boolean {
+  const value = unit.charCodeAt(0);
+  return value >= 0xdc00 && value <= 0xdfff;
+}
+
+/** Deterministic redaction of credential-like values inside diagnostic context. */
+const CREDENTIAL_PATTERNS: readonly RegExp[] = [
+  /\bsk-[A-Za-z0-9_-]{6,}\b/g,
+  /\bBearer\s+[A-Za-z0-9._~+\-/=]+/g,
+  /\b(?:api[_-]?key|apikey|token|secret)\s*[=:]\s*[A-Za-z0-9._~+\-/=]+/gi,
+];
+
+function redactCredentials(line: string): string {
+  let redacted = line;
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    redacted = redacted.replace(pattern, "[REDACTED]");
+  }
+  return redacted;
+}
+
 export class NdjsonStreamParser {
   private readonly state: ProtocolState;
   private readonly maxPendingLineBytes: number;
   private readonly maxDiagnosticContextChars: number;
   private readonly pending = new ByteAccumulator();
+  private pendingHighSurrogate: string | null = null;
   private lineNumber = 0;
   private skippingLine = false;
   private skippedBytes = 0;
@@ -39,7 +67,73 @@ export class NdjsonStreamParser {
     if (this.ended) {
       return;
     }
-    this.pending.append(typeof chunk === "string" ? encoder.encode(chunk) : chunk);
+    if (typeof chunk === "string") {
+      this.appendStringChunk(chunk);
+    } else {
+      this.flushStringSeam();
+      this.pending.append(chunk);
+    }
+    this.processPending();
+  }
+
+  /** End of stream: flushes the unterminated tail line and returns the terminal outcome. */
+  finish(): ParserOutcome {
+    if (this.ended) {
+      return this.buildOutcome();
+    }
+    this.ended = true;
+    this.flushStringSeam();
+    if (this.skippingLine) {
+      this.skippedBytes += this.pending.size;
+      this.state.addDiagnostic({ kind: "line-too-long", lineNumber: ++this.lineNumber, bytes: this.skippedBytes });
+      this.skippingLine = false;
+    } else if (this.pending.size > 0) {
+      const tail = this.pending.takeAll();
+      if (tail.length > 0) {
+        this.processLine(tail);
+      }
+    }
+    return this.buildOutcome();
+  }
+
+  /**
+   * Encode a string chunk through a one-code-unit seam: a high surrogate at
+   * the end of one chunk combines with a low surrogate at the start of the
+   * next instead of being independently encoded into replacement characters.
+   */
+  private appendStringChunk(chunk: string): void {
+    if (chunk === "") {
+      return;
+    }
+    let text = chunk;
+    if (this.pendingHighSurrogate !== null) {
+      const first = text[0];
+      if (first !== undefined && isLowSurrogate(first)) {
+        this.pending.append(encoder.encode(this.pendingHighSurrogate + first));
+        text = text.slice(1);
+      } else {
+        this.flushStringSeam();
+      }
+    }
+    const last = text[text.length - 1];
+    if (last !== undefined && isHighSurrogate(last)) {
+      this.pendingHighSurrogate = last;
+      text = text.slice(0, -1);
+    }
+    if (text.length > 0) {
+      this.pending.append(encoder.encode(text));
+    }
+  }
+
+  /** Encode a lone pending high surrogate (no low half follows) and clear it. */
+  private flushStringSeam(): void {
+    if (this.pendingHighSurrogate !== null) {
+      this.pending.append(encoder.encode(this.pendingHighSurrogate));
+      this.pendingHighSurrogate = null;
+    }
+  }
+
+  private processPending(): void {
     while (this.pending.size > 0) {
       if (this.skippingLine) {
         const newline = this.pending.indexOf(0x0a);
@@ -64,27 +158,13 @@ export class NdjsonStreamParser {
         }
         break;
       }
+      if (line.length > this.maxPendingLineBytes) {
+        // A complete line that still exceeds the cap is skipped, never parsed.
+        this.state.addDiagnostic({ kind: "line-too-long", lineNumber: ++this.lineNumber, bytes: line.length });
+        continue;
+      }
       this.processLine(line);
     }
-  }
-
-  /** End of stream: flushes the unterminated tail line and returns the terminal outcome. */
-  finish(): ParserOutcome {
-    if (this.ended) {
-      return this.buildOutcome();
-    }
-    this.ended = true;
-    if (this.skippingLine) {
-      this.skippedBytes += this.pending.size;
-      this.state.addDiagnostic({ kind: "line-too-long", lineNumber: ++this.lineNumber, bytes: this.skippedBytes });
-      this.skippingLine = false;
-    } else if (this.pending.size > 0) {
-      const tail = this.pending.takeAll();
-      if (tail.length > 0) {
-        this.processLine(tail);
-      }
-    }
-    return this.buildOutcome();
   }
 
   private buildOutcome(): ParserOutcome {
@@ -145,7 +225,8 @@ export class NdjsonStreamParser {
     }
   }
 
+  /** Bounded, credential-redacted context snippet for a malformed line. */
   private snippet(line: string): string {
-    return line.trim().slice(0, this.maxDiagnosticContextChars);
+    return redactCredentials(line.trim()).slice(0, this.maxDiagnosticContextChars);
   }
 }
