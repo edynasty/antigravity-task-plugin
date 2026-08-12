@@ -1,0 +1,20 @@
+# antigravity-task-plugin workspace hygiene
+
+# Planner state (kept on disk, never committed)
+.omo/
+
+# Tool metadata (codegraph index symlink)
+.codegraph
+
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Package tarballs
+*.tgz
+
+# Local environment files (allow committed .env.example)
+.env
+.env.*
+!.env.example
