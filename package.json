@@ -1,0 +1,46 @@
+{
+  "name": "antigravity-task-plugin",
+  "version": "0.0.0",
+  "description": "OpenCode plugin that delegates standalone tasks to the official Antigravity agy CLI and returns the final text, session id, status and token usage",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:integration": "bun tests/integration-skip.ts",
+    "test:live": "bun tests/live-skip.ts"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "antigravity",
+    "agy"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.0 <2.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.14",
+    "@types/bun": "latest",
+    "typescript": "^5.8.2"
+  }
+}
