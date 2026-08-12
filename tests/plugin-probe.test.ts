@@ -8,7 +8,7 @@
  * probe I/O.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -84,7 +84,7 @@ describe("validateProbeContract", () => {
     try {
       const error = validateProbeContract(outside, marker);
       expect(error).toMatch(/tmp dir|prefix|direct child/);
-      expect(require("node:fs").existsSync(marker)).toBe(false);
+      expect(existsSync(marker)).toBe(false);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -155,7 +155,7 @@ describe("probe env contract end to end (no writes on invalid)", () => {
       const error = validateProbeContract(process.env[PLUGIN_LOAD_ROOT_ENV], process.env[PLUGIN_LOAD_MARKER_ENV]);
       expect(error).toMatch(/marker/);
     });
-    expect(require("node:fs").existsSync(join(tmpRoot, "escaped-write.marker"))).toBe(false);
+    expect(existsSync(join(tmpRoot, "escaped-write.marker"))).toBe(false);
   });
 
   test("a marker in a subdirectory is rejected (must be exact direct child)", () => {
@@ -196,6 +196,6 @@ describe("probe file write through the plugin entry", () => {
     await withProbeEnv(undefined, undefined, async () => {
       await pluginEntry();
     });
-    expect(require("node:fs").existsSync(marker)).toBe(false);
+    expect(existsSync(marker)).toBe(false);
   });
 });
