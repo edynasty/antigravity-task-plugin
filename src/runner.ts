@@ -16,7 +16,7 @@ import { resolveAgy, runAgy } from "./process.js";
 import type { DiscoveryOptions, ProcessResult } from "./process.js";
 import { redactCredentials } from "./redaction.js";
 import {
-  boundDiagnosticStderr,
+  boundDiagnosticText,
   riskNote,
   type AntigravityTaskArgs,
   type AntigravityTaskMetadata,
@@ -126,8 +126,8 @@ function resolveMessage(kind: ResolveErrorKind): string {
   }
 }
 
-function processFailure(error: ProcessError, provenance: string): AntigravityTaskMetadata {
-  return failureMetadata(error.kind, error.message, provenance, { exit: error.exit });
+function processFailure(error: ProcessError, provenance: string, cwd: string): AntigravityTaskMetadata {
+  return failureMetadata(error.kind, boundDiagnosticText(error.message, cwd), provenance, { exit: error.exit });
 }
 
 function parserFailureMetadata(
@@ -164,8 +164,8 @@ function parserFailureMetadata(
   }
 }
 
-function metadataFromParser(parsed: ParserOutcome, exit: ProcessExit, provenance: string, rawStderr: string): AntigravityTaskMetadata {
-  const stderr = boundDiagnosticStderr(rawStderr);
+function metadataFromParser(parsed: ParserOutcome, exit: ProcessExit, provenance: string, rawStderr: string, cwd: string): AntigravityTaskMetadata {
+  const stderr = boundDiagnosticText(rawStderr, cwd);
   if (parsed.kind === "failure") {
     return parserFailureMetadata(parsed, exit, provenance, stderr);
   }
@@ -240,7 +240,7 @@ export async function runAntigravityTask(
     });
   } catch (error) {
     if (error instanceof ProcessError) {
-      return payloadFromMetadata(processFailure(error, provenance));
+      return payloadFromMetadata(processFailure(error, provenance, context.cwd));
     }
     throw error;
   }
@@ -251,5 +251,5 @@ export async function runAntigravityTask(
   }
   const parsed = parser.finish();
   const exit: ProcessExit = { exitCode: proc.exitCode, signal: proc.signal };
-  return payloadFromMetadata(metadataFromParser(parsed, exit, provenance, proc.stderr));
+  return payloadFromMetadata(metadataFromParser(parsed, exit, provenance, proc.stderr, context.cwd));
 }

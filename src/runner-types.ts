@@ -60,18 +60,23 @@ export type RunnerFailureKind =
   | "empty-output"
   | "nonzero-exit";
 
-/** Redacted, bounded stderr excerpt surfaced in metadata (chars after redaction). */
-export const MAX_STDERR_DIAGNOSTIC_CHARS = 2_000;
-/** Suffix appended when the redacted stderr exceeds the diagnostic cap. */
-export const STDERR_TRUNCATION_SUFFIX = "\n[stderr truncated]";
+/** Redacted, bounded diagnostic text cap (chars after redaction). */
+export const MAX_DIAGNOSTIC_CHARS = 2_000;
+/** Suffix appended when redacted diagnostic text exceeds the cap. */
+export const DIAGNOSTIC_TRUNCATION_SUFFIX = "\n[diagnostic truncated]";
 
-/** Redact credentials first, then truncate, so a split token cannot evade the patterns. */
-export function boundDiagnosticStderr(stderr: string): string {
-  const redacted = redactCredentials(stderr);
-  if (redacted.length <= MAX_STDERR_DIAGNOSTIC_CHARS) {
+/**
+ * Shared bounded-diagnostic policy: redact the known cwd and credential-like
+ * values FIRST, then truncate, so truncation cannot split a credential before
+ * it is recognized. Used for stderr excerpts and ProcessError messages alike.
+ */
+export function boundDiagnosticText(text: string, cwd: string | undefined): string {
+  const withoutCwd = cwd !== undefined && cwd.length > 1 ? text.split(cwd).join("[cwd]") : text;
+  const redacted = redactCredentials(withoutCwd);
+  if (redacted.length <= MAX_DIAGNOSTIC_CHARS) {
     return redacted;
   }
-  return `${redacted.slice(0, MAX_STDERR_DIAGNOSTIC_CHARS)}${STDERR_TRUNCATION_SUFFIX}`;
+  return `${redacted.slice(0, MAX_DIAGNOSTIC_CHARS)}${DIAGNOSTIC_TRUNCATION_SUFFIX}`;
 }
 
 /** Concise, machine-stable provenance/risk note; sandbox never promises file-write protection. */
