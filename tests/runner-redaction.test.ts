@@ -91,4 +91,49 @@ describe("runAntigravityTask diagnostic redaction and bounding", () => {
       expect(payload.metadata.message).toContain("[REDACTED]");
     }
   });
+
+  test("a 5000+ char status error detail with fake cwd is bounded and redacted", async () => {
+    const fakeCwd = "/private/fake/cwd/project";
+    const secret = "sk-1234567890abcdefghijklmn";
+    const detail = `${fakeCwd}/src/fail.ts:1 ${secret} ${"q".repeat(MAX_DIAGNOSTIC_CHARS * 2)}`;
+    const fake = makeFakeDeps();
+    fake.setRunResult(processResult({ stdout: `${initLine()}\n${resultLine("ERROR", "", { error: detail })}\n`, exitCode: 1 }));
+    const { ctx } = runContext(fakeCwd);
+    const payload = await runAntigravityTask({ task: "t" }, ctx, fake.deps);
+
+    expect(payload.metadata.ok).toBe(false);
+    if (!payload.metadata.ok) {
+      expect(payload.metadata.kind).toBe("status");
+      const prefix = "agy finished with status ERROR: ";
+      expect(payload.output).not.toContain(fakeCwd);
+      expect(payload.output).not.toContain(secret);
+      expect(payload.metadata.message).not.toContain(fakeCwd);
+      expect(payload.metadata.message).not.toContain(secret);
+      expect(payload.metadata.message).toContain("[REDACTED]");
+      expect(payload.metadata.message.length).toBeLessThan(detail.length);
+      expect(payload.metadata.message.length).toBeLessThanOrEqual(
+        prefix.length + MAX_DIAGNOSTIC_CHARS + DIAGNOSTIC_TRUNCATION_SUFFIX.length,
+      );
+    }
+  });
+
+  test("malformed-line diagnostic context with fake cwd and secrets is sanitized in metadata", async () => {
+    const fakeCwd = "/private/fake/cwd/project";
+    const secret = "sk-1234567890abcdefghijklmn";
+    const malformedLine = `noise ${fakeCwd}/file.ts ${secret} garbage`;
+    const fake = makeFakeDeps();
+    fake.setRunResult(processResult({ stdout: `${malformedLine}\n${initLine()}\n${resultLine("SUCCESS", "ok")}\n` }));
+    const { ctx } = runContext(fakeCwd);
+    const payload = await runAntigravityTask({ task: "t" }, ctx, fake.deps);
+
+    expect(payload.metadata.ok).toBe(true);
+    const context = payload.metadata.diagnostics.find((entry) => entry.kind === "malformed-line");
+    expect(context, "a malformed-line diagnostic must be surfaced").toBeDefined();
+    if (context?.kind === "malformed-line") {
+      expect(context.lineNumber).toBe(1);
+      expect(context.context).not.toContain(fakeCwd);
+      expect(context.context).not.toContain(secret);
+      expect(context.context).toContain("[REDACTED]");
+    }
+  });
 });

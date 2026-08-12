@@ -14,10 +14,10 @@ import { HOST_GRACE_MS, ProcessError, ResolveError } from "./process-types.js";
 import type { ProcessExit, ResolveErrorKind } from "./process-types.js";
 import { resolveAgy, runAgy } from "./process.js";
 import type { DiscoveryOptions, ProcessResult } from "./process.js";
-import { redactCredentials } from "./redaction.js";
 import {
   boundDiagnosticText,
   riskNote,
+  sanitizeDiagnostics,
   type AntigravityTaskArgs,
   type AntigravityTaskMetadata,
   type RunnerContext,
@@ -135,6 +135,8 @@ function parserFailureMetadata(
   exit: ProcessExit,
   provenance: string,
   stderr: string,
+  cwd: string,
+  diagnostics: readonly Diagnostic[],
 ): AntigravityTaskMetadata {
   const base = {
     status: parsed.status,
@@ -142,13 +144,13 @@ function parserFailureMetadata(
     usage: parsed.usage,
     exit,
     provenance,
-    diagnostics: parsed.diagnostics,
+    diagnostics,
     droppedDiagnostics: parsed.droppedDiagnostics,
     stderr,
   };
   switch (parsed.reason.type) {
     case "status": {
-      const detail = parsed.reason.error === null ? "" : `: ${redactCredentials(parsed.reason.error)}`;
+      const detail = parsed.reason.error === null ? "" : `: ${boundDiagnosticText(parsed.reason.error, cwd)}`;
       return failureMetadata("status", `agy finished with status ${parsed.reason.status}${detail}`, provenance, base);
     }
     case "duplicate-result":
@@ -166,8 +168,9 @@ function parserFailureMetadata(
 
 function metadataFromParser(parsed: ParserOutcome, exit: ProcessExit, provenance: string, rawStderr: string, cwd: string): AntigravityTaskMetadata {
   const stderr = boundDiagnosticText(rawStderr, cwd);
+  const diagnostics = sanitizeDiagnostics(parsed.diagnostics, cwd);
   if (parsed.kind === "failure") {
-    return parserFailureMetadata(parsed, exit, provenance, stderr);
+    return parserFailureMetadata(parsed, exit, provenance, stderr, cwd, diagnostics);
   }
   if (exit.exitCode !== 0 || exit.signal !== null) {
     return failureMetadata("nonzero-exit", `agy exited with ${exitDetail(exit)} despite reporting SUCCESS`, provenance, {
@@ -175,7 +178,7 @@ function metadataFromParser(parsed: ParserOutcome, exit: ProcessExit, provenance
       conversationId: parsed.conversationId,
       usage: parsed.usage,
       exit,
-      diagnostics: parsed.diagnostics,
+      diagnostics,
       droppedDiagnostics: parsed.droppedDiagnostics,
       stderr,
     });
@@ -189,7 +192,7 @@ function metadataFromParser(parsed: ParserOutcome, exit: ProcessExit, provenance
     usage: parsed.usage,
     exit,
     provenance,
-    diagnostics: parsed.diagnostics,
+    diagnostics,
     droppedDiagnostics: parsed.droppedDiagnostics,
     stderr,
   };

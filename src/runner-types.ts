@@ -79,6 +79,34 @@ export function boundDiagnosticText(text: string, cwd: string | undefined): stri
   return `${redacted.slice(0, MAX_DIAGNOSTIC_CHARS)}${DIAGNOSTIC_TRUNCATION_SUFFIX}`;
 }
 
+function assertNever(value: never): never {
+  throw new Error(`unreachable diagnostic: ${String(value)}`);
+}
+
+/**
+ * Runner-boundary sanitization of parser diagnostics: only free-text fields are
+ * transformed. Currently only malformed-line context carries free text; kind,
+ * lineNumber, bytes, name and the parser's own caps are preserved exactly.
+ */
+export function sanitizeDiagnostics(diagnostics: readonly Diagnostic[], cwd: string | undefined): readonly Diagnostic[] {
+  return diagnostics.map((diagnostic) => {
+    switch (diagnostic.kind) {
+      case "malformed-line":
+        return { kind: "malformed-line", lineNumber: diagnostic.lineNumber, context: boundDiagnosticText(diagnostic.context, cwd) };
+      case "unknown-event":
+        return diagnostic;
+      case "invalid-event-payload":
+        return diagnostic;
+      case "line-too-long":
+        return diagnostic;
+      case "output-truncated":
+        return diagnostic;
+      default:
+        return assertNever(diagnostic);
+    }
+  });
+}
+
 /** Concise, machine-stable provenance/risk note; sandbox never promises file-write protection. */
 export function riskNote(mode: Mode, sandbox: boolean | undefined): string {
   if (mode === "execute") {
