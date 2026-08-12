@@ -17,6 +17,7 @@ import {
   buildIsolatedOpenCodeEnv,
   formatHashLine,
   hashFileOrAbsent,
+  inspectPluginLoad,
   loadPluginFactory,
   packOutputFilename,
   specToPluginSpec,
@@ -247,5 +248,27 @@ describe("formatHashLine", () => {
     expect(line).toContain("/tmp/config.jsonc");
     expect(line).toContain(digest);
     expect(line).not.toContain("ABSENT");
+  });
+});
+
+describe("inspectPluginLoad", () => {
+  test("reports clean when no load error appears and the plugin is listed", () => {
+    const result = inspectPluginLoad("opencode version: 1.18.16\nplugins:\n- file:///tmp/p/plugin.js", "noise only", true);
+    expect(result.clean).toBe(true);
+    expect(result.loadError).toBeUndefined();
+  });
+
+  test("fails on the legacy-loader non-function export error even when exit was 0", () => {
+    const stderr =
+      'level=ERROR message="failed to load plugin" path=file:///tmp/p/index.js error="Plugin export is not a function"';
+    const result = inspectPluginLoad("plugins:\n- file:///tmp/p/index.js", stderr, true);
+    expect(result.clean).toBe(false);
+    expect(result.loadError).toMatch(/failed to load plugin|Plugin export is not a function/);
+  });
+
+  test("fails when the plugins list is missing even with no error", () => {
+    const result = inspectPluginLoad("no plugins here", "", false);
+    expect(result.clean).toBe(false);
+    expect(result.loadError).toMatch(/no plugins list/);
   });
 });

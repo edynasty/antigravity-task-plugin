@@ -68,6 +68,32 @@ export function formatHashLine(file: string, hash: string): string {
   return `${file} ${hash}`;
 }
 
+/** OpenCode legacy-loader failure signals that must never appear in load logs. */
+const PLUGIN_LOAD_ERROR_PATTERN = /failed to load plugin|Plugin export is not a function/i;
+
+export interface LoadCheckResult {
+  readonly clean: boolean;
+  readonly loadError: string | undefined;
+}
+
+/**
+ * Inspect `debug info --print-logs` output for the real legacy-loader result.
+ * The loader logs an ERROR on every failure and nothing on success while the
+ * CLI exits 0 either way, so absence of the failure signal IS the positive
+ * load proof. `listed` asserts the plugins list was actually printed.
+ */
+export function inspectPluginLoad(stdout: string, stderr: string, listed: boolean): LoadCheckResult {
+  const loadLog = `${stderr}\n${stdout}`;
+  const loadError = loadLog.match(PLUGIN_LOAD_ERROR_PATTERN)?.[0];
+  if (loadError !== undefined) {
+    return { clean: false, loadError };
+  }
+  if (!listed) {
+    return { clean: false, loadError: "no plugins list produced by debug info" };
+  }
+  return { clean: true, loadError: undefined };
+}
+
 /** sha256 hex digest of the file at `path`, or "ABSENT" when it does not exist. */
 
 export interface LoadedPlugin {

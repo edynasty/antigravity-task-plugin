@@ -14,13 +14,22 @@
  *      ("antigravity-task"), via default and named factory exports;
  *   2. `opencode debug config` resolves a config whose plugin spec points at
  *      the packed module (exit 0, spec present in the resolved JSON);
- *   3. `opencode debug startup` exits 0 in the isolated env;
+ *   3. `opencode debug info --print-logs --log-level DEBUG` actually LOADS the
+ *      packed plugin under the real loader: logs must contain NO
+ *      "failed to load plugin" / "Plugin export is not a function" and the
+ *      plugin must appear in the plugins list (positive load signal);
  *   4. negative: an invalid plugin entry makes `opencode debug config` exit
  *      nonzero with an actionable schema error, and importing a definitely
  *      nonexistent plugin spec fails with an actionable load error;
  *   5. the live config files (~/.config/opencode/opencode.jsonc and
  *      ~/.omo/omo.jsonc) hash unchanged before/after, each present hash or
  *      ABSENT logged distinctly.
+ *
+ * The packed plugin is loaded through the dedicated loader-safe entry
+ * (dist/plugin.js), which exports ONLY the plugin factory function — the
+ * root dist/index.js exports constants/schema/helpers that make OpenCode's
+ * legacy loader (Object.values traversal) throw "Plugin export is not a
+ * function" even though the CLI exits 0.
  *
  * OpenCode CLI cannot enumerate a plugin's tools without a session/LLM, so
  * tool registration is proven by importing and instantiating the packed
@@ -35,13 +44,14 @@ import {
   buildIsolatedOpenCodeEnv,
   formatHashLine,
   hashFileOrAbsent,
+  inspectPluginLoad,
   loadPluginFactory,
   packOutputFilename,
   writeOpenCodeConfig,
 } from "./helpers/integration-harness";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
-const PACKED_ENTRY = join("package", "dist", "index.js");
+const PACKED_ENTRY = join("package", "dist", "plugin.js");
 const LIVE_CONFIG_FILES = [join(process.env["HOME"] ?? "/nonexistent", ".config", "opencode", "opencode.jsonc"), join(process.env["HOME"] ?? "/nonexistent", ".omo", "omo.jsonc")];
 
 interface SpawnResult {
@@ -167,12 +177,24 @@ async function main(): Promise<number> {
     const entryUrl = pathToFileURL(join(installDir, PACKED_ENTRY)).href;
     pass("extract-and-link", entryUrl);
 
-    // 3. Import + instantiate the PACKED module: exact tool registration.
+    // 3. Import + instantiate the PACKED loader-safe entry: exact tool registration.
+    //    The dedicated entry exports only the default factory (loader-safe);
+    //    root named/default compatibility is covered by tests/plugin.test.ts.
     const loaded = await loadPluginFactory(entryUrl);
-    if (loaded.defaultIsFunction && loaded.namedIsFunction && loaded.toolKeys.length === 1 && loaded.toolKeys[0] === "antigravity-task") {
-      pass("packed-tool-registration", `exactly ["antigravity-task"] via default+named factory`);
+    if (loaded.defaultIsFunction && loaded.toolKeys.length === 1 && loaded.toolKeys[0] === "antigravity-task") {
+      pass("packed-tool-registration", `exactly ["antigravity-task"] via packed default factory`);
     } else {
       fail("packed-tool-registration", JSON.stringify(loaded));
+    }
+
+    // 3b. Pack metadata: the dedicated entry and its declaration are in the artifact.
+    const pluginJs = join(installDir, "package", "dist", "plugin.js");
+    const pluginDts = join(installDir, "package", "dist", "plugin.d.ts");
+    const entryExists = (await Bun.file(pluginJs).exists()) && (await Bun.file(pluginDts).exists());
+    if (entryExists) {
+      pass("packed-entry-present", `dist/plugin.js + dist/plugin.d.ts in tarball`);
+    } else {
+      fail("packed-entry-present", `missing packed plugin entry ${pluginJs}`);
     }
 
     // 4. Config pointing at the packed module resolves under `opencode debug config`,
@@ -190,7 +212,20 @@ async function main(): Promise<number> {
       }
     }
 
-    // 5. Startup resolves in the isolated env.
+    // 5. Real load-bearing check: `debug info --print-logs --log-level DEBUG`
+    //    actually loads the packed plugin through the legacy loader. The
+    //    loader logs `failed to load plugin ... Plugin export is not a
+    //    function` on every failure and nothing on success (CLI exits 0
+    //    either way), so absence of the error is the positive load signal.
+    const info = runIsolated(opencodeBin, ["--print-logs", "--log-level", "DEBUG", "debug", "info"], env.workDir, env.processEnv);
+    const load = inspectPluginLoad(info.stdout, info.stderr, info.stdout.includes("plugins:"));
+    if (!load.clean) {
+      fail("plugin-load-clean", load.loadError ?? "unknown load failure");
+    } else {
+      pass("plugin-load-clean", `no failed-to-load/export error in DEBUG logs; plugin listed (exit ${info.exitCode})`);
+    }
+
+    // 6. Startup resolves in the isolated env.
     const startup = runIsolated(opencodeBin, ["debug", "startup"], env.workDir, env.processEnv);
     if (startup.exitCode === 0 && startup.stdout.trim().length > 0) {
       pass("debug-startup", `exit 0, timing printed`);
@@ -198,7 +233,7 @@ async function main(): Promise<number> {
       fail("debug-startup", `exit ${startup.exitCode}, stdout=${JSON.stringify(startup.stdout.trim())}, stderr=${startup.stderr.trim()}`);
     }
 
-    // 6. NEGATIVE A: invalid plugin entry shape is rejected by `debug config` itself.
+    // 7. NEGATIVE A: invalid plugin entry shape is rejected by `debug config` itself.
     await writeOpenCodeConfig(dirname(env.configFile), [42]);
     const negA = runIsolated(opencodeBin, ["debug", "config"], env.workDir, env.processEnv);
     if (negA.exitCode !== 0 && /Expected string \| array|plugin/i.test(negA.stderr)) {
@@ -207,7 +242,7 @@ async function main(): Promise<number> {
       fail("negative-invalid-entry", `expected nonzero + schema error, got exit ${negA.exitCode}: ${negA.stderr.trim()}`);
     }
 
-    // 7. NEGATIVE B: importing a definitely nonexistent plugin spec fails load.
+    // 8. NEGATIVE B: importing a definitely nonexistent plugin spec fails load.
     const missingSpec = pathToFileURL(join(tempRoot, "definitely-missing-plugin.ts")).href;
     try {
       await loadPluginFactory(missingSpec);
