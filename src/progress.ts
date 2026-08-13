@@ -4,7 +4,7 @@
  * they read primitive fields exclusively and never parse free text. Only the
  * official init / step_update / result events are snapshotted.
  */
-import { isRecord, isStatus, isUsage } from "./protocol-types.js";
+import { isRecord, isUsage } from "./protocol-types.js";
 import type { ProgressSnapshot } from "./protocol-types.js";
 
 function nullableString(value: unknown): string | null {
@@ -63,19 +63,5 @@ export function stepUpdateProgress(event: Readonly<Record<string, unknown>>): Pr
     stepType: nullableString(payload["step_type"]),
     elapsedSeconds: nullableSeconds(payload["duration_seconds"]),
     totalTokens: totalTokensOf(payload["usage"]),
-  };
-}
-
-export function resultProgress(event: Readonly<Record<string, unknown>>): ProgressSnapshot {
-  const result = event["result"];
-  if (!isRecord(result)) {
-    return { event: "result", status: null, conversationId: null, totalTokens: null };
-  }
-  const status = result["status"];
-  return {
-    event: "result",
-    status: isStatus(status) ? status : null,
-    conversationId: nullableString(result["conversation_id"]),
-    totalTokens: totalTokensOf(result["usage"]),
   };
 }

@@ -84,16 +84,27 @@ describe("NdjsonStreamParser onProgress observer", () => {
     ]);
   });
 
-  test("result emits a terminal snapshot with status, conversation id and result usage", () => {
-    const { snapshots } = collect(`${resultEvent({ status: "SUCCESS", response: "r", usage: RESULT_USAGE })}\n`);
-    expect(snapshots).toEqual([
-      { event: "result", status: "SUCCESS", conversationId: CONVERSATION_ID, totalTokens: RESULT_USAGE.total_tokens },
-    ]);
+  test("result lines never emit a snapshot (authority deferred to terminal outcome)", () => {
+    const { snapshots, outcome } = collect(`${resultEvent({ status: "SUCCESS", response: "r", usage: RESULT_USAGE })}\n`);
+    expect(snapshots).toEqual([]);
+    expect(outcome.kind).toBe("success");
   });
 
-  test("snapshot order matches stream event order", () => {
+  test("snapshot order excludes result events; init and step snapshots still flow", () => {
     const { snapshots } = collect(officialSuccessStream());
-    expect(snapshots.map((snapshot) => snapshot.event)).toEqual(["init", "step_update", "step_update", "step_update", "result"]);
+    expect(snapshots.map((snapshot) => snapshot.event)).toEqual(["init", "step_update", "step_update", "step_update"]);
+  });
+
+  test("structurally invalid and duplicate result lines emit no snapshot", () => {
+    const invalid = collect(`${line({ event: "result", result: { conversation_id: CONVERSATION_ID, status: "SUCCESS" } })}\n`);
+    expect(invalid.snapshots).toEqual([]);
+    expect(invalid.outcome.kind).toBe("failure");
+
+    const duplicate = collect(
+      `${resultEvent({ status: "SUCCESS", response: "first" })}\n${resultEvent({ status: "SUCCESS", response: "second" })}\n`,
+    );
+    expect(duplicate.snapshots).toEqual([]);
+    expect(duplicate.outcome.kind).toBe("failure");
   });
 
   test("unknown and malformed lines never leak a snapshot", () => {

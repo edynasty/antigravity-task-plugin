@@ -13,7 +13,7 @@
  */
 import { ByteAccumulator } from "./byte-accumulator.js";
 import { ProtocolState, normalizeOptions } from "./protocol-state.js";
-import { initProgress, resultProgress, stepUpdateProgress } from "./progress.js";
+import { initProgress, stepUpdateProgress } from "./progress.js";
 import { isRecord } from "./protocol-types.js";
 import type { ParserOutcome, ProgressSnapshot, ProtocolParserOptions } from "./protocol-types.js";
 import { redactCredentials } from "./redaction.js";
@@ -208,8 +208,11 @@ export class NdjsonStreamParser {
         this.observe(stepUpdateProgress(parsed));
         break;
       case "result":
+        // Result authority is deferred: no snapshot is observed here, so a
+        // malformed or duplicate result can never transiently claim a status
+        // before the parser's terminal outcome is known. The runner emits the
+        // authoritative terminal update after finish().
         this.state.handleResult(parsed);
-        this.observe(resultProgress(parsed));
         break;
       default:
         // Unknown event types are forward-compatible: recorded, never fatal.

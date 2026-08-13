@@ -57,6 +57,7 @@ describe("runAntigravityTask progress lifecycle", () => {
     expect(order.indexOf("progress:start")).toBeLessThan(order.indexOf("runAgy-called"));
     const events = updates.map((update) => update.event);
     expect(events[events.length - 1]).toBe("terminal");
+    expect(events).not.toContain("result");
     expect(updates[updates.length - 1]).toEqual({
       event: "terminal",
       kind: "success",

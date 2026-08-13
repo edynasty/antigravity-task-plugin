@@ -135,6 +135,8 @@ export type ProtocolParserOptions = {
  * Bounded, sanitized progress snapshot for the official protocol events only.
  * Only primitive fields cross the boundary; raw lines, free text and payload
  * bodies never leak. Absent values are null (never omitted, never invented).
+ * Result events are intentionally NOT snapshotted: terminal outcome authority
+ * is deferred to the runner's terminal update.
  */
 export type ProgressSnapshot =
   | { readonly event: "init"; readonly conversationId: string | null }
@@ -146,8 +148,7 @@ export type ProgressSnapshot =
       readonly stepType: string | null;
       readonly elapsedSeconds: number | null;
       readonly totalTokens: number | null;
-    }
-  | { readonly event: "result"; readonly status: Status | null; readonly conversationId: string | null; readonly totalTokens: number | null };
+    };
 
 /** Final text accumulation cap (chars). */
 export const MAX_OUTPUT_CHARS = 1_000_000;

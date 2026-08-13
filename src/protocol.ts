@@ -4,7 +4,7 @@
  * Todo 5 imports `NdjsonStreamParser` and the outcome types from here.
  */
 export { NdjsonStreamParser } from "./protocol-parser.js";
-export { initProgress, resultProgress, stepUpdateProgress } from "./progress.js";
+export { initProgress, stepUpdateProgress } from "./progress.js";
 export {
   MAX_DIAGNOSTIC_CONTEXT_CHARS,
   MAX_DIAGNOSTICS,

@@ -11,6 +11,7 @@
 import { tool, type Plugin, type PluginInput, type PluginOptions, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin";
 import type { Hooks } from "@opencode-ai/plugin";
 import { defaultDeps, runAntigravityTask } from "./runner.js";
+import { redactCredentials } from "./redaction.js";
 import type { AntigravityTaskArgs, ProgressUpdate, RunnerDeps, ToolPayload } from "./runner-types.js";
 
 export const PACKAGE_IDENTITY = {
@@ -22,20 +23,22 @@ export type PackageIdentity = typeof PACKAGE_IDENTITY;
 
 /** Minimum wall-clock gap between metadata(title/metadata) UI updates. */
 export const PROGRESS_MIN_INTERVAL_MS = 150;
-/** Cap on free-text protocol fields before they cross into metadata. */
-const MAX_PROGRESS_FIELD_CHARS = 200;
+/** Cap on every string field before it crosses into title/metadata. */
+export const MAX_PROGRESS_FIELD_CHARS = 200;
 
 export type ProgressMetadata = { readonly title: string; readonly metadata: Record<string, unknown> };
 
-function boundedString(value: string | null, cap = MAX_PROGRESS_FIELD_CHARS): string | null {
+/** Redact the full value first, then bound — truncation can never split a credential. */
+function sanitizedString(value: string | null, cap = MAX_PROGRESS_FIELD_CHARS): string | null {
   if (value === null) {
     return null;
   }
-  return value.length > cap ? value.slice(0, cap) : value;
+  const redacted = redactCredentials(value);
+  return redacted.length > cap ? redacted.slice(0, cap) : redacted;
 }
 
-function assertNeverProgress(value: never): never {
-  throw new Error(`unreachable progress update: ${String(value)}`);
+function assertNeverProgress(): never {
+  throw new Error("unreachable progress update");
 }
 
 /** Map a runner ProgressUpdate to a bounded {title, metadata} UI payload. */
@@ -45,22 +48,24 @@ export function progressToMetadata(update: ProgressUpdate): ProgressMetadata {
       return { title: "antigravity-task: starting", metadata: { phase: "starting" } };
     case "init": {
       const metadata: Record<string, unknown> = { phase: "starting" };
-      if (update.conversationId !== null) {
-        metadata["conversationId"] = update.conversationId;
+      const conversationId = sanitizedString(update.conversationId);
+      if (conversationId !== null) {
+        metadata["conversationId"] = conversationId;
       }
       return { title: "antigravity-task: starting", metadata };
     }
     case "step_update": {
-      const stepType = boundedString(update.stepType);
+      const stepType = sanitizedString(update.stepType);
+      const state = sanitizedString(update.state);
       const phase = stepType !== null ? `step ${String(update.stepIndex)} ${stepType}` : "responding";
       const metadata: Record<string, unknown> = { phase };
-      if (update.conversationId !== null) {
-        metadata["conversationId"] = update.conversationId;
+      const conversationId = sanitizedString(update.conversationId);
+      if (conversationId !== null) {
+        metadata["conversationId"] = conversationId;
       }
       if (update.stepIndex !== null) {
         metadata["stepIndex"] = update.stepIndex;
       }
-      const state = boundedString(update.state);
       if (state !== null) {
         metadata["state"] = state;
       }
@@ -75,23 +80,12 @@ export function progressToMetadata(update: ProgressUpdate): ProgressMetadata {
       }
       return { title: `antigravity-task: ${phase}`, metadata };
     }
-    case "result": {
-      const status = boundedString(update.status);
-      const phase = status ?? "result";
-      const metadata: Record<string, unknown> = { phase };
-      if (update.conversationId !== null) {
-        metadata["conversationId"] = update.conversationId;
-      }
-      if (update.totalTokens !== null) {
-        metadata["totalTokens"] = update.totalTokens;
-      }
-      return { title: `antigravity-task: ${phase}`, metadata };
-    }
     case "terminal": {
       const phase = update.kind === "success" ? "SUCCESS" : update.kind;
       const metadata: Record<string, unknown> = { phase };
-      if (update.conversationId !== null) {
-        metadata["conversationId"] = update.conversationId;
+      const conversationId = sanitizedString(update.conversationId);
+      if (conversationId !== null) {
+        metadata["conversationId"] = conversationId;
       }
       if (update.totalTokens !== null) {
         metadata["totalTokens"] = update.totalTokens;
@@ -99,7 +93,7 @@ export function progressToMetadata(update: ProgressUpdate): ProgressMetadata {
       return { title: `antigravity-task: ${phase}`, metadata };
     }
     default:
-      return assertNeverProgress(update);
+      return assertNeverProgress();
   }
 }
 

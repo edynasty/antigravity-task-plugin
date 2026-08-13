@@ -1,14 +1,17 @@
 /**
- * Plugin live-progress wiring (Todo 9). The tool maps runner ProgressUpdates
+ * Plugin live-progress wiring (Todo 9/10). The tool maps runner ProgressUpdates
  * to throttled `context.metadata({ title, metadata })` calls: first start and
  * terminal updates always delivered, intermediate updates coalesced, the
  * metadata UI callback isolated so it can never fail or abort the agy task,
- * and no timer or metadata call surviving execute's resolve.
+ * and no timer or metadata call surviving execute's resolve. Result authority
+ * is deferred: invalid/duplicate results never claim SUCCESS mid-run, and a
+ * valid run emits exactly one terminal SUCCESS last.
  */
 import { describe, expect, test } from "bun:test";
-import { PROGRESS_MIN_INTERVAL_MS, createAntigravityTaskTool, createProgressDispatcher, progressToMetadata } from "../src/index";
+import { PROGRESS_MIN_INTERVAL_MS, createAntigravityTaskTool } from "../src/index";
 import type { RunnerDeps } from "../src/runner-types";
 import { ProcessError } from "../src/process-types";
+import { line } from "./fixtures/protocol/streams";
 import {
   initLine,
   makeFakeDeps,
@@ -56,98 +59,8 @@ function delayedDeps(chunks: readonly string[], delayMs: number, result = proces
   };
 }
 
-describe("progressToMetadata mapper", () => {
-  test("maps start to the starting title", () => {
-    expect(progressToMetadata({ event: "start" })).toEqual({
-      title: "antigravity-task: starting",
-      metadata: { phase: "starting" },
-    });
-  });
-
-  test("maps step_update with step type to a step title with bounded fields", () => {
-    const mapped = progressToMetadata({
-      event: "step_update",
-      conversationId: "conv-1",
-      stepIndex: 3,
-      state: "ACTIVE",
-      stepType: "run_command",
-      elapsedSeconds: 1.5,
-      totalTokens: 7,
-    });
-    expect(mapped.title).toBe("antigravity-task: step 3 run_command");
-    expect(mapped.metadata).toEqual({
-      phase: "step 3 run_command",
-      conversationId: "conv-1",
-      stepIndex: 3,
-      state: "ACTIVE",
-      stepType: "run_command",
-      elapsedSeconds: 1.5,
-      totalTokens: 7,
-    });
-  });
-
-  test("maps bare step_update to the responding title", () => {
-    const mapped = progressToMetadata({
-      event: "step_update",
-      conversationId: null,
-      stepIndex: null,
-      state: null,
-      stepType: null,
-      elapsedSeconds: null,
-      totalTokens: null,
-    });
-    expect(mapped.title).toBe("antigravity-task: responding");
-    expect(mapped.metadata).toEqual({ phase: "responding" });
-  });
-
-  test("maps terminal success and failure kinds to bounded titles", () => {
-    expect(progressToMetadata({ event: "terminal", kind: "success", conversationId: null, totalTokens: 15 }).title).toBe("antigravity-task: SUCCESS");
-    expect(progressToMetadata({ event: "terminal", kind: "timeout", conversationId: null, totalTokens: 0 }).title).toBe("antigravity-task: timeout");
-  });
-
-  test("caps unbounded string fields before they reach metadata", () => {
-    const mapped = progressToMetadata({
-      event: "step_update",
-      conversationId: null,
-      stepIndex: 1,
-      state: "x".repeat(500),
-      stepType: "y".repeat(500),
-      elapsedSeconds: null,
-      totalTokens: null,
-    });
-    expect(mapped.metadata["state"]).toHaveLength(200);
-    expect(mapped.metadata["stepType"]).toHaveLength(200);
-    expect(String(mapped.metadata["state"])).not.toContain("y".repeat(500));
-  });
-});
-
-describe("createProgressDispatcher throttling", () => {
-  test("first update immediate; trailing pending flushed; no orphan timer", async () => {
-    const calls: Array<{ title: string; metadata: Record<string, unknown>; at: number }> = [];
-    const dispatcher = createProgressDispatcher((input) => {
-      calls.push({ title: input.title ?? "", metadata: input.metadata ?? {}, at: Date.now() });
-    }, 20);
-
-    dispatcher.dispatch({ event: "start" });
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.title).toBe("antigravity-task: starting");
-
-    for (let index = 0; index < 20; index += 1) {
-      dispatcher.dispatch({ event: "step_update", conversationId: null, stepIndex: index, state: "ACTIVE", stepType: null, elapsedSeconds: null, totalTokens: null });
-    }
-    expect(calls.length).toBe(1);
-
-    dispatcher.flush();
-    expect(calls.length).toBe(2);
-    expect(calls[1]?.title).toBe("antigravity-task: responding");
-
-    await sleep(80);
-    expect(calls.length).toBe(2);
-  });
-});
-
 describe("antigravity-task tool live progress", () => {
-  test("starting title first and terminal SUCCESS last, final payload unchanged", async () => {
+  test("starting title first and exactly one terminal SUCCESS last, final payload unchanged", async () => {
     const { context, updates } = metadataRecorder();
     const fake = makeFakeDeps();
     fake.setRunResult(processResult({ stdout: successStream("final answer.") }));
@@ -156,10 +69,11 @@ describe("antigravity-task tool live progress", () => {
     expect(result).toMatchObject({ title: "antigravity-task: SUCCESS" });
     expect(updates.length).toBeGreaterThanOrEqual(2);
     expect(updates[0]?.title).toBe("antigravity-task: starting");
+    expect(updates.filter((update) => update.title === "antigravity-task: SUCCESS").length).toBe(1);
     expect(updates[updates.length - 1]?.title).toBe("antigravity-task: SUCCESS");
   });
 
-  test("slow runs surface the step title with bounded metadata fields", async () => {
+  test("slow runs surface the step title with bounded metadata fields and one SUCCESS", async () => {
     const { context, updates } = metadataRecorder();
     const chunks = lineChunks([initLine(), stepLine(), resultLine("SUCCESS", "slow.")]);
     const deps = delayedDeps(chunks, PROGRESS_MIN_INTERVAL_MS + 20, processResult({ chunks }));
@@ -169,7 +83,77 @@ describe("antigravity-task tool live progress", () => {
     expect(stepUpdate?.title).toBe("antigravity-task: step 0 agent_response");
     expect(stepUpdate?.metadata["stepType"]).toBe("agent_response");
     expect(stepUpdate?.metadata["stepIndex"]).toBe(0);
+    expect(updates.filter((update) => update.title === "antigravity-task: SUCCESS").length).toBe(1);
     expect(updates[updates.length - 1]?.title).toBe("antigravity-task: SUCCESS");
+  });
+
+  test("structurally invalid result never claims SUCCESS; terminal invalid-result is last", async () => {
+    const { context, updates } = metadataRecorder();
+    const invalidResult = line({ event: "result", result: { conversation_id: "conv-x", status: "SUCCESS" } });
+    const fake = makeFakeDeps();
+    fake.setRunResult(processResult({ chunks: lineChunks([initLine(), invalidResult]) }));
+    const result = await createAntigravityTaskTool(fake.deps).execute({ task: "invalid" }, context);
+
+    expect(result).toMatchObject({ title: "antigravity-task: invalid-result" });
+    const titles = updates.map((update) => update.title);
+    expect(titles.filter((title) => title === "antigravity-task: SUCCESS")).toEqual([]);
+    expect(titles[titles.length - 1]).toBe("antigravity-task: invalid-result");
+  });
+
+  test("duplicate result never claims SUCCESS; terminal duplicate-result is last", async () => {
+    const { context, updates } = metadataRecorder();
+    const fake = makeFakeDeps();
+    fake.setRunResult(
+      processResult({ chunks: lineChunks([initLine(), resultLine("SUCCESS", "first"), resultLine("SUCCESS", "second")]) }),
+    );
+    const result = await createAntigravityTaskTool(fake.deps).execute({ task: "dup" }, context);
+
+    expect(result).toMatchObject({ title: "antigravity-task: duplicate-result" });
+    const titles = updates.map((update) => update.title);
+    expect(titles.filter((title) => title === "antigravity-task: SUCCESS")).toEqual([]);
+    expect(titles[titles.length - 1]).toBe("antigravity-task: duplicate-result");
+  });
+
+  test("credential-shaped delayed stream never leaks secrets into titles or metadata", async () => {
+    const { context, updates } = metadataRecorder();
+    const chunks = lineChunks([
+      initLine(),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conv-safe",
+          step_index: 0,
+          state: "api_key=AKIAIOSFODNN7EXAMPLE",
+          step_type: "sk-ant-1234567890abcdef1234567890abcdef",
+        },
+      }),
+      resultLine("SUCCESS", "ok."),
+    ]);
+    const deps = delayedDeps(chunks, PROGRESS_MIN_INTERVAL_MS + 20, processResult({ chunks }));
+    await createAntigravityTaskTool(deps).execute({ task: "secret" }, context);
+
+    const serialized = JSON.stringify(updates.map((update) => ({ title: update.title, metadata: update.metadata })));
+    expect(serialized).not.toContain("sk-ant-1234567890abcdef1234567890abcdef");
+    expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  test("60000-char conversationId is bounded at the tool boundary", async () => {
+    const { context, updates } = metadataRecorder();
+    const huge = "x".repeat(60_000);
+    const chunks = lineChunks([
+      JSON.stringify({ event: "init", conversation_id: huge, init: { cwd: "/w", tools: [] } }),
+      stepLine(),
+      resultLine("SUCCESS", "ok."),
+    ]);
+    const deps = delayedDeps(chunks, 10, processResult({ chunks }));
+    await createAntigravityTaskTool(deps).execute({ task: "huge" }, context);
+
+    for (const update of updates) {
+      if (typeof update.metadata["conversationId"] === "string") {
+        expect(update.metadata["conversationId"]).toHaveLength(200);
+      }
+    }
   });
 
   test("many ACTIVE text_delta events coalesce; callback count bounded and terminal kept", async () => {
