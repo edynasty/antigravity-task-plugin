@@ -32,9 +32,11 @@ import {
   DEFAULT_TERMINATE_GRACE_MS,
   HOST_GRACE_MS,
   ProcessError,
+  invokeChunkObserver,
   terminationMessage,
   type ProcessExit,
   type ProcessResult,
+  type StdoutChunkObserver,
   type TerminationKind,
 } from "./process-types.js";
 import { resolveAgy } from "./discovery.js";
@@ -53,6 +55,7 @@ export interface SpawnOptions {
   readonly closeWatchMs?: number;
   readonly maxStdoutBytes?: number;
   readonly maxStderrBytes?: number;
+  readonly onStdoutChunk?: StdoutChunkObserver;
 }
 
 function errorMessage(error: unknown): string {
@@ -154,6 +157,7 @@ export function runAgy(options: SpawnOptions): Promise<ProcessResult> {
       }
       if (overflowBytes === null) {
         stdoutChunks.push(text);
+        invokeChunkObserver(options.onStdoutChunk, text);
       }
     };
 

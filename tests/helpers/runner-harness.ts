@@ -9,7 +9,7 @@
  */
 import { ProcessError, ResolveError } from "../../src/process-types";
 import type { ProcessResult, SpawnOptions } from "../../src/process";
-import type { RunnerContext, RunnerDeps, ToolPayload } from "../../src/runner-types";
+import type { ProgressUpdate, RunnerContext, RunnerDeps, ToolPayload } from "../../src/runner-types";
 import type { ToolContext } from "@opencode-ai/plugin";
 
 export const CONVERSATION_ID = "conv-runner-00000000-0000-4000-8000-000000000000";
@@ -126,6 +126,9 @@ export function makeFakeDeps(): FakeRunnerDeps {
       if (options.signal.aborted) {
         throw new ProcessError("aborted", "agy run was aborted before spawn");
       }
+      for (const chunk of runOutcome.stdoutChunks) {
+        options.onStdoutChunk?.(chunk);
+      }
       return runOutcome;
     },
   };
@@ -152,6 +155,19 @@ export function makeFakeDeps(): FakeRunnerDeps {
 export function runContext(cwd = "/work"): { readonly ctx: RunnerContext; readonly signal: AbortSignal } {
   const controller = new AbortController();
   return { ctx: { cwd, signal: controller.signal }, signal: controller.signal };
+}
+
+/** RunnerContext whose onProgress records every update for ordering assertions. */
+export function progressContext(
+  cwd = "/work",
+): { readonly ctx: RunnerContext; readonly updates: ProgressUpdate[]; readonly signal: AbortSignal } {
+  const controller = new AbortController();
+  const updates: ProgressUpdate[] = [];
+  return {
+    ctx: { cwd, signal: controller.signal, onProgress: (update) => updates.push(update) },
+    updates,
+    signal: controller.signal,
+  };
 }
 
 export function mockToolContext(directory = "/work", abort = new AbortController().signal): ToolContext {

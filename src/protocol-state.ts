@@ -22,7 +22,7 @@ import type {
   Usage,
 } from "./protocol-types.js";
 
-export type Options = Required<ProtocolParserOptions>;
+export type Options = Required<Omit<ProtocolParserOptions, "onProgress">>;
 
 export function normalizeOptions(options: ProtocolParserOptions): Options {
   const normalized: Options = {

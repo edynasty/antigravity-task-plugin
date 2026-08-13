@@ -13,8 +13,9 @@
  */
 import { ByteAccumulator } from "./byte-accumulator.js";
 import { ProtocolState, normalizeOptions } from "./protocol-state.js";
+import { initProgress, resultProgress, stepUpdateProgress } from "./progress.js";
 import { isRecord } from "./protocol-types.js";
-import type { ParserOutcome, ProtocolParserOptions } from "./protocol-types.js";
+import type { ParserOutcome, ProgressSnapshot, ProtocolParserOptions } from "./protocol-types.js";
 import { redactCredentials } from "./redaction.js";
 
 const encoder = new TextEncoder();
@@ -34,6 +35,7 @@ export class NdjsonStreamParser {
   private readonly state: ProtocolState;
   private readonly maxPendingLineBytes: number;
   private readonly maxDiagnosticContextChars: number;
+  private readonly onProgress: ((snapshot: ProgressSnapshot) => void) | undefined;
   private readonly pending = new ByteAccumulator();
   private pendingHighSurrogate: string | null = null;
   private lineNumber = 0;
@@ -46,6 +48,7 @@ export class NdjsonStreamParser {
     this.state = new ProtocolState(normalized);
     this.maxPendingLineBytes = normalized.maxPendingLineBytes;
     this.maxDiagnosticContextChars = normalized.maxDiagnosticContextChars;
+    this.onProgress = options.onProgress;
   }
 
   /** Feed the next chunk of stream output. Idempotently ignored after finish(). */
@@ -198,17 +201,31 @@ export class NdjsonStreamParser {
     switch (eventName) {
       case "init":
         this.state.handleInit(parsed, this.lineNumber);
+        this.observe(initProgress(parsed));
         break;
       case "step_update":
         this.state.handleStepUpdate(parsed, this.lineNumber);
+        this.observe(stepUpdateProgress(parsed));
         break;
       case "result":
         this.state.handleResult(parsed);
+        this.observe(resultProgress(parsed));
         break;
       default:
         // Unknown event types are forward-compatible: recorded, never fatal.
         this.state.addDiagnostic({ kind: "unknown-event", lineNumber: this.lineNumber, name: eventName });
         break;
+    }
+  }
+
+  private observe(snapshot: ProgressSnapshot): void {
+    if (this.onProgress !== undefined) {
+      try {
+        this.onProgress(snapshot);
+      } catch {
+        // Progress observers are best-effort: a throwing observer never
+        // alters parsing or the terminal outcome.
+      }
     }
   }
 

@@ -7,7 +7,7 @@
  */
 import { redactCredentials } from "./redaction.js";
 import type { Mode } from "./args.js";
-import type { Diagnostic, Status, Usage } from "./protocol.js";
+import type { Diagnostic, ProgressSnapshot, Status, Usage } from "./protocol.js";
 import type { DiscoveryOptions, ProcessResult, SpawnOptions } from "./process.js";
 import type { ProcessExit } from "./process-types.js";
 
@@ -22,10 +22,50 @@ export interface AntigravityTaskArgs {
   readonly sandbox?: boolean;
 }
 
-/** Minimal execution context the plugin derives from ToolContext. */
+/**
+ * Minimal execution context the plugin derives from ToolContext. `onProgress`
+ * is the only progress channel: the plugin wires it to OpenCode metadata, so
+ * the core runner never sees ToolContext.
+ */
 export interface RunnerContext {
   readonly cwd: string;
   readonly signal: AbortSignal;
+  readonly onProgress?: (update: ProgressUpdate) => void;
+}
+
+/** Runner lifecycle progress beyond the protocol events: start + terminal. */
+export type ProgressUpdate =
+  | ProgressSnapshot
+  | { readonly event: "start" }
+  | {
+      readonly event: "terminal";
+      readonly kind: "success" | RunnerFailureKind;
+      readonly conversationId: string | null;
+      readonly totalTokens: number | null;
+    };
+
+/**
+ * Isolated progress dispatch: progress is best-effort by contract, so a
+ * throwing consumer must never fail the run or alter the payload.
+ */
+export function emitProgress(context: RunnerContext, update: ProgressUpdate): void {
+  if (context.onProgress !== undefined) {
+    try {
+      context.onProgress(update);
+    } catch {
+      // Isolated: a throwing progress consumer never fails the run.
+    }
+  }
+}
+
+/** The authoritative terminal update derived from the final metadata. */
+export function terminalProgress(metadata: AntigravityTaskMetadata): ProgressUpdate {
+  return {
+    event: "terminal",
+    kind: metadata.kind,
+    conversationId: metadata.conversationId,
+    totalTokens: metadata.usage.total_tokens,
+  };
 }
 
 /**

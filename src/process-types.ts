@@ -66,6 +66,22 @@ export const DEFAULT_CLOSE_WATCH_MS = 1_000;
 
 export type TerminationKind = Exclude<ProcessErrorKind, "spawn-failed">;
 
+export type StdoutChunkObserver = (chunk: string) => void;
+
+/**
+ * Isolated observer invocation: a throwing chunk observer never fails or
+ * aborts the child run — progress is best-effort by contract.
+ */
+export function invokeChunkObserver(observer: StdoutChunkObserver | undefined, chunk: string): void {
+  if (observer !== undefined) {
+    try {
+      observer(chunk);
+    } catch {
+      // Isolated: chunk observers never fail or abort the run.
+    }
+  }
+}
+
 export function terminationMessage(kind: TerminationKind, pid: number, exit: ProcessExit): string {
   const detail =
     exit.signal === null && exit.exitCode === null

@@ -11,7 +11,7 @@
 import { tool, type Plugin, type PluginInput, type PluginOptions, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin";
 import type { Hooks } from "@opencode-ai/plugin";
 import { defaultDeps, runAntigravityTask } from "./runner.js";
-import type { AntigravityTaskArgs, RunnerDeps, ToolPayload } from "./runner-types.js";
+import type { AntigravityTaskArgs, ProgressUpdate, RunnerDeps, ToolPayload } from "./runner-types.js";
 
 export const PACKAGE_IDENTITY = {
   name: "antigravity-task-plugin",
@@ -19,6 +19,152 @@ export const PACKAGE_IDENTITY = {
 } as const;
 
 export type PackageIdentity = typeof PACKAGE_IDENTITY;
+
+/** Minimum wall-clock gap between metadata(title/metadata) UI updates. */
+export const PROGRESS_MIN_INTERVAL_MS = 150;
+/** Cap on free-text protocol fields before they cross into metadata. */
+const MAX_PROGRESS_FIELD_CHARS = 200;
+
+export type ProgressMetadata = { readonly title: string; readonly metadata: Record<string, unknown> };
+
+function boundedString(value: string | null, cap = MAX_PROGRESS_FIELD_CHARS): string | null {
+  if (value === null) {
+    return null;
+  }
+  return value.length > cap ? value.slice(0, cap) : value;
+}
+
+function assertNeverProgress(value: never): never {
+  throw new Error(`unreachable progress update: ${String(value)}`);
+}
+
+/** Map a runner ProgressUpdate to a bounded {title, metadata} UI payload. */
+export function progressToMetadata(update: ProgressUpdate): ProgressMetadata {
+  switch (update.event) {
+    case "start":
+      return { title: "antigravity-task: starting", metadata: { phase: "starting" } };
+    case "init": {
+      const metadata: Record<string, unknown> = { phase: "starting" };
+      if (update.conversationId !== null) {
+        metadata["conversationId"] = update.conversationId;
+      }
+      return { title: "antigravity-task: starting", metadata };
+    }
+    case "step_update": {
+      const stepType = boundedString(update.stepType);
+      const phase = stepType !== null ? `step ${String(update.stepIndex)} ${stepType}` : "responding";
+      const metadata: Record<string, unknown> = { phase };
+      if (update.conversationId !== null) {
+        metadata["conversationId"] = update.conversationId;
+      }
+      if (update.stepIndex !== null) {
+        metadata["stepIndex"] = update.stepIndex;
+      }
+      const state = boundedString(update.state);
+      if (state !== null) {
+        metadata["state"] = state;
+      }
+      if (stepType !== null) {
+        metadata["stepType"] = stepType;
+      }
+      if (update.elapsedSeconds !== null) {
+        metadata["elapsedSeconds"] = update.elapsedSeconds;
+      }
+      if (update.totalTokens !== null) {
+        metadata["totalTokens"] = update.totalTokens;
+      }
+      return { title: `antigravity-task: ${phase}`, metadata };
+    }
+    case "result": {
+      const status = boundedString(update.status);
+      const phase = status ?? "result";
+      const metadata: Record<string, unknown> = { phase };
+      if (update.conversationId !== null) {
+        metadata["conversationId"] = update.conversationId;
+      }
+      if (update.totalTokens !== null) {
+        metadata["totalTokens"] = update.totalTokens;
+      }
+      return { title: `antigravity-task: ${phase}`, metadata };
+    }
+    case "terminal": {
+      const phase = update.kind === "success" ? "SUCCESS" : update.kind;
+      const metadata: Record<string, unknown> = { phase };
+      if (update.conversationId !== null) {
+        metadata["conversationId"] = update.conversationId;
+      }
+      if (update.totalTokens !== null) {
+        metadata["totalTokens"] = update.totalTokens;
+      }
+      return { title: `antigravity-task: ${phase}`, metadata };
+    }
+    default:
+      return assertNeverProgress(update);
+  }
+}
+
+/**
+ * Throttled metadata dispatcher: first update is delivered immediately,
+ * trailing updates are coalesced into one pending slot and flushed on demand.
+ * The metadata UI callback is the only failure-isolated boundary; a throwing
+ * metadata() never fails or aborts the agy task. flush() clears the timer so
+ * no update can ever fire after execute settles.
+ */
+export function createProgressDispatcher(
+  metadata: ToolContext["metadata"],
+  minIntervalMs = PROGRESS_MIN_INTERVAL_MS,
+): { readonly dispatch: (update: ProgressUpdate) => void; readonly flush: () => void } {
+  let lastEmit = 0;
+  let pending: ProgressMetadata | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const emitNow = (update: ProgressMetadata): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    lastEmit = Date.now();
+    pending = null;
+    try {
+      metadata(update);
+    } catch {
+      // Isolated UI boundary: a throwing metadata() must not fail the task.
+    }
+  };
+
+  const dispatch = (update: ProgressUpdate): void => {
+    const mapped = progressToMetadata(update);
+    if (Date.now() - lastEmit >= minIntervalMs) {
+      emitNow(mapped);
+      return;
+    }
+    pending = mapped;
+    if (timer === null) {
+      timer = setTimeout(() => {
+        timer = null;
+        if (pending !== null) {
+          const current = pending;
+          pending = null;
+          emitNow(current);
+        }
+      }, minIntervalMs - (Date.now() - lastEmit));
+    }
+  };
+
+  const flush = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (pending !== null) {
+      const current = pending;
+      pending = null;
+      emitNow(current);
+    }
+  };
+
+  return { dispatch, flush };
+}
 
 const antigravityTaskArgs = {
   task: tool.schema
@@ -77,7 +223,17 @@ export function createAntigravityTaskTool(deps: RunnerDeps = defaultDeps): ToolD
       "sandbox restricts only terminal/shell access, never filesystem writes.",
     args: antigravityTaskArgs,
     async execute(args, context: ToolContext): Promise<ToolPayload> {
-      return runAntigravityTask(toInteriorArgs(args), { cwd: context.directory, signal: context.abort }, deps);
+      const { dispatch, flush } = createProgressDispatcher(context.metadata);
+      const onProgress = (update: ProgressUpdate): void => dispatch(update);
+      try {
+        return await runAntigravityTask(
+          toInteriorArgs(args),
+          { cwd: context.directory, signal: context.abort, onProgress },
+          deps,
+        );
+      } finally {
+        flush();
+      }
     },
   });
 }

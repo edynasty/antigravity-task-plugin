@@ -15,6 +15,8 @@
  *   signal-term -> kills itself with SIGTERM so the parent sees code null + signal
  *   pipe-hold   -> spawns a descendant that holds stdout/stderr open, records both
  *                  PIDs, then exits 0; the descendant (sh -> sleep) outlives it
+ *   ndjson-stream -> writes AGY_NDJSON_STREAM (JSON string array) to stdout, one
+ *                  line per AGY_NDJSON_DELAY_MS (default 30), then exits 0
  * Every scenario writes its own PID to AGY_PID_PATH first.
  */
 import { spawn } from "node:child_process";
@@ -24,6 +26,8 @@ import {
   CHILD_PID_PATH_ENV,
   ENV_PROBE_ENV,
   EXIT_CODE_ENV,
+  NDJSON_DELAY_ENV,
+  NDJSON_STREAM_ENV,
   PID_PATH_ENV,
   PROC_SCENARIO_ENV,
   RECORD_PATH_ENV,
@@ -31,7 +35,7 @@ import {
   STDOUT_LINES_ENV,
 } from "./process-env";
 
-const SCENARIO_VALUES = ["record", "stderr", "output", "hang", "ignore-term", "signal-term", "pipe-hold"] as const;
+const SCENARIO_VALUES = ["record", "stderr", "output", "hang", "ignore-term", "signal-term", "pipe-hold", "ndjson-stream"] as const;
 type Scenario = (typeof SCENARIO_VALUES)[number];
 
 const SCENARIO_SET: ReadonlySet<string> = new Set<string>(SCENARIO_VALUES);
@@ -113,6 +117,45 @@ function runPipeHold(): void {
   process.exit(0);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms);
+  });
+}
+
+/**
+ * Writes a JSON string array of NDJSON lines (AGY_NDJSON_STREAM) to stdout,
+ * one per AGY_NDJSON_DELAY_MS (default 30), then exits 0. Each writeSync is a
+ * synchronous syscall, so the parent observes each chunk before close — this
+ * proves the progress observer fires mid-execution, not after completion.
+ */
+/**
+ * Writes a JSON string array of NDJSON lines (AGY_NDJSON_STREAM) to stdout,
+ * one per AGY_NDJSON_DELAY_MS (default 30), then exits 0. writeSync is a
+ * synchronous syscall, so the parent observes each chunk before close.
+ */
+async function runNdjsonStream(): Promise<void> {
+  writePidFile();
+  const raw = process.env[NDJSON_STREAM_ENV] ?? "[]";
+  const delay = Math.max(0, Number(process.env[NDJSON_DELAY_ENV] ?? "30"));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    writeSync(2, "process-fixture: AGY_NDJSON_STREAM must be a JSON string array\n");
+    process.exit(2);
+  }
+  if (!Array.isArray(parsed) || !parsed.every((entry): entry is string => typeof entry === "string")) {
+    writeSync(2, "process-fixture: AGY_NDJSON_STREAM must be a JSON string array\n");
+    process.exit(2);
+  }
+  for (const ndjsonLine of parsed) {
+    writeSync(1, `${ndjsonLine}\n`);
+    await sleep(delay);
+  }
+  process.exit(0);
+}
+
 function main(): void {
   const raw = process.env[PROC_SCENARIO_ENV] ?? "record";
   if (!isScenario(raw)) {
@@ -140,6 +183,9 @@ function main(): void {
       break;
     case "pipe-hold":
       runPipeHold();
+      break;
+    case "ndjson-stream":
+      void runNdjsonStream();
       break;
   }
 }

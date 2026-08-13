@@ -16,8 +16,10 @@ import { resolveAgy, runAgy } from "./process.js";
 import type { DiscoveryOptions, ProcessResult } from "./process.js";
 import {
   boundDiagnosticText,
+  emitProgress,
   riskNote,
   sanitizeDiagnostics,
+  terminalProgress,
   type AntigravityTaskArgs,
   type AntigravityTaskMetadata,
   type RunnerContext,
@@ -212,12 +214,20 @@ export async function runAntigravityTask(
   const provenance = riskNote(args.mode ?? DEFAULT_MODE, args.sandbox);
   const timeoutSeconds = args.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
 
+  emitProgress(context, { event: "start" });
+
+  const parser = new NdjsonStreamParser({ onProgress: (snapshot) => emitProgress(context, snapshot) });
+  const finish = (metadata: AntigravityTaskMetadata): ToolPayload => {
+    emitProgress(context, terminalProgress(metadata));
+    return payloadFromMetadata(metadata);
+  };
+
   let argv: readonly string[];
   try {
     argv = buildArgv(args);
   } catch (error) {
     if (error instanceof ArgsError) {
-      return payloadFromMetadata(validationMetadata(error, provenance));
+      return finish(validationMetadata(error, provenance));
     }
     throw error;
   }
@@ -227,7 +237,7 @@ export async function runAntigravityTask(
     executable = deps.resolveAgy(discoveryOptions(deps));
   } catch (error) {
     if (error instanceof ResolveError) {
-      return payloadFromMetadata(failureMetadata(resolveKind(error.kind), resolveMessage(error.kind), provenance));
+      return finish(failureMetadata(resolveKind(error.kind), resolveMessage(error.kind), provenance));
     }
     throw error;
   }
@@ -240,19 +250,16 @@ export async function runAntigravityTask(
       env: deps.env,
       signal: context.signal,
       hostTimeoutMs: timeoutSeconds * 1000 + HOST_GRACE_MS,
+      onStdoutChunk: (chunk) => parser.push(chunk),
     });
   } catch (error) {
     if (error instanceof ProcessError) {
-      return payloadFromMetadata(processFailure(error, provenance, context.cwd));
+      return finish(processFailure(error, provenance, context.cwd));
     }
     throw error;
   }
 
-  const parser = new NdjsonStreamParser();
-  for (const chunk of proc.stdoutChunks) {
-    parser.push(chunk);
-  }
   const parsed = parser.finish();
   const exit: ProcessExit = { exitCode: proc.exitCode, signal: proc.signal };
-  return payloadFromMetadata(metadataFromParser(parsed, exit, provenance, proc.stderr, context.cwd));
+  return finish(metadataFromParser(parsed, exit, provenance, proc.stderr, context.cwd));
 }

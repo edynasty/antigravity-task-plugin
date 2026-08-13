@@ -76,6 +76,8 @@ OpenCode loads plugins once at startup. After editing `opencode.json`, quit and 
 
 The plugin registers exactly one tool: `antigravity-task`.
 
+While a run is executing, the tool reports live progress through OpenCode's tool metadata (title plus bounded fields such as `phase`, `conversationId`, `stepIndex`, `state`, `stepType`, `elapsedSeconds`, `totalTokens`). Titles follow `antigravity-task: starting`, `antigravity-task: step 3 run_command`, `antigravity-task: responding` and end with `antigravity-task: SUCCESS` (or a failure kind). Updates are throttled; task prompt, raw NDJSON, paths, environment and credentials are never exposed.
+
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `task` | `string` | (required) | The standalone task prompt to send to agy. Must be non-empty. |

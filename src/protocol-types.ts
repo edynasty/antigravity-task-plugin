@@ -97,8 +97,7 @@ export type InvalidResultReason =
   | "usage";
 
 /** Exactly one terminal parser outcome: success xor failure. */
-export type ParserOutcome =
-  | {
+export type ParserOutcome =  | {
       readonly kind: "success";
       readonly status: "SUCCESS";
       readonly text: string;
@@ -129,7 +128,26 @@ export type ProtocolParserOptions = {
   readonly maxPendingLineBytes?: number;
   readonly maxDiagnostics?: number;
   readonly maxDiagnosticContextChars?: number;
+  readonly onProgress?: (snapshot: ProgressSnapshot) => void;
 };
+
+/**
+ * Bounded, sanitized progress snapshot for the official protocol events only.
+ * Only primitive fields cross the boundary; raw lines, free text and payload
+ * bodies never leak. Absent values are null (never omitted, never invented).
+ */
+export type ProgressSnapshot =
+  | { readonly event: "init"; readonly conversationId: string | null }
+  | {
+      readonly event: "step_update";
+      readonly conversationId: string | null;
+      readonly stepIndex: number | null;
+      readonly state: string | null;
+      readonly stepType: string | null;
+      readonly elapsedSeconds: number | null;
+      readonly totalTokens: number | null;
+    }
+  | { readonly event: "result"; readonly status: Status | null; readonly conversationId: string | null; readonly totalTokens: number | null };
 
 /** Final text accumulation cap (chars). */
 export const MAX_OUTPUT_CHARS = 1_000_000;
