@@ -40,20 +40,23 @@ export const ZERO_USAGE: Usage = {
   total_tokens: 0,
 };
 
-/** init event payload (informational; only conversation_id is consumed). */
+/** init event payload (informational; only conversation_id/model/agent/permission_mode are consumed). */
 export type InitPayload = {
   readonly cwd: string;
   readonly tools: readonly string[];
   readonly permission_mode: string;
+  readonly model?: string;
+  readonly agent?: string;
 };
 
-/** step_update payload; only text_delta / step_index / usage are consumed. */
+/** step_update payload; only text_delta / step_index / usage / tool_name are consumed. */
 export type StepUpdatePayload = {
   readonly conversation_id?: string;
   readonly step_index?: number;
   readonly state?: string;
   readonly step_type?: string;
   readonly text_delta?: string;
+  readonly tool_name?: string;
   readonly usage?: Usage;
 };
 
@@ -105,6 +108,10 @@ export type ParserOutcome =  | {
       readonly usage: Usage;
       readonly diagnostics: readonly Diagnostic[];
       readonly droppedDiagnostics: number;
+      readonly model: string | null;
+      readonly agent: string | null;
+      readonly permissionMode: string | null;
+      readonly durationSeconds: number | null;
     }
   | {
       readonly kind: "failure";
@@ -115,6 +122,10 @@ export type ParserOutcome =  | {
       readonly usage: Usage;
       readonly diagnostics: readonly Diagnostic[];
       readonly droppedDiagnostics: number;
+      readonly model: string | null;
+      readonly agent: string | null;
+      readonly permissionMode: string | null;
+      readonly durationSeconds: number | null;
     };
 
 /** Parsed result envelope: ok carries the typed value, else a stable reason. */
@@ -139,13 +150,20 @@ export type ProtocolParserOptions = {
  * is deferred to the runner's terminal update.
  */
 export type ProgressSnapshot =
-  | { readonly event: "init"; readonly conversationId: string | null }
+  | {
+      readonly event: "init";
+      readonly conversationId: string | null;
+      readonly model: string | null;
+      readonly agent: string | null;
+      readonly permissionMode: string | null;
+    }
   | {
       readonly event: "step_update";
       readonly conversationId: string | null;
       readonly stepIndex: number | null;
       readonly state: string | null;
       readonly stepType: string | null;
+      readonly toolName: string | null;
       readonly elapsedSeconds: number | null;
       readonly totalTokens: number | null;
     };

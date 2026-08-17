@@ -46,7 +46,9 @@ function collect(stream: string, chunkSize = 0, maxPendingLineBytes?: number): C
 describe("NdjsonStreamParser onProgress observer", () => {
   test("init event emits one init snapshot with the conversation id", () => {
     const { snapshots } = collect(`${initEvent()}\n`);
-    expect(snapshots).toEqual([{ event: "init", conversationId: CONVERSATION_ID }]);
+    expect(snapshots).toEqual([
+      { event: "init", conversationId: CONVERSATION_ID, model: null, agent: null, permissionMode: "request-review" },
+    ]);
   });
 
   test("step_update emits a bounded primitive snapshot", () => {
@@ -58,6 +60,7 @@ describe("NdjsonStreamParser onProgress observer", () => {
         stepIndex: 3,
         state: "ACTIVE",
         stepType: "run_command",
+        toolName: null,
         elapsedSeconds: null,
         totalTokens: STEP_USAGE.total_tokens,
       },
@@ -78,6 +81,62 @@ describe("NdjsonStreamParser onProgress observer", () => {
         stepIndex: null,
         state: null,
         stepType: null,
+        toolName: null,
+        elapsedSeconds: null,
+        totalTokens: null,
+      },
+    ]);
+  });
+
+  test("init snapshot carries model, agent and permission_mode primitives", () => {
+    const { snapshots } = collect(
+      `${line({
+        event: "init",
+        conversation_id: CONVERSATION_ID,
+        init: { cwd: "/tmp/work", tools: [], permission_mode: "request-review", model: "claude-sonnet-4-6", agent: "agy-agent" },
+      })}\n`,
+    );
+    expect(snapshots).toEqual([
+      {
+        event: "init",
+        conversationId: CONVERSATION_ID,
+        model: "claude-sonnet-4-6",
+        agent: "agy-agent",
+        permissionMode: "request-review",
+      },
+    ]);
+  });
+
+  test("init snapshot absent model/agent/permission_mode stays null without crashing", () => {
+    const { snapshots } = collect(
+      `${line({ event: "init", conversation_id: CONVERSATION_ID, init: { cwd: "/w", tools: [] } })}\n`,
+    );
+    expect(snapshots).toEqual([
+      { event: "init", conversationId: CONVERSATION_ID, model: null, agent: null, permissionMode: null },
+    ]);
+  });
+
+  test("step_update snapshot carries tool_name for tool steps", () => {
+    const { snapshots } = collect(
+      `${line({
+        event: "step_update",
+        step_update: {
+          conversation_id: CONVERSATION_ID,
+          step_index: 3,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+        },
+      })}\n`,
+    );
+    expect(snapshots).toEqual([
+      {
+        event: "step_update",
+        conversationId: CONVERSATION_ID,
+        stepIndex: 3,
+        state: "ACTIVE",
+        stepType: "tool",
+        toolName: "run_command",
         elapsedSeconds: null,
         totalTokens: null,
       },
@@ -141,7 +200,9 @@ describe("NdjsonStreamParser onProgress observer", () => {
     parser.push(`${initEvent()}\n`);
     parser.finish();
     parser.push(`${stepEvent({ stepIndex: 0, state: "DONE" })}\n`);
-    expect(snapshots).toEqual([{ event: "init", conversationId: CONVERSATION_ID }]);
+    expect(snapshots).toEqual([
+      { event: "init", conversationId: CONVERSATION_ID, model: null, agent: null, permissionMode: "request-review" },
+    ]);
   });
 
   test("oversized lines are skipped and emit no snapshot", () => {

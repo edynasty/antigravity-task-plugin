@@ -25,7 +25,8 @@ describe("runAntigravityTask composition", () => {
 
     expect(payload.metadata.ok).toBe(true);
     if (payload.metadata.ok) {
-      expect(payload.output).toBe("final answer.");
+      expect(payload.output).toContain("final answer.");
+      expect(payload.output).toContain("antigravity-task execution details");
       expect(payload.title).toBe("antigravity-task: SUCCESS");
       expect(payload.metadata.kind).toBe("success");
       expect(payload.metadata.status).toBe("SUCCESS");
@@ -47,7 +48,8 @@ describe("runAntigravityTask composition", () => {
 
     expect(payload.metadata.ok).toBe(true);
     if (payload.metadata.ok) {
-      expect(payload.output).toBe("chunked answer.");
+      expect(payload.output).toContain("chunked answer.");
+      expect(payload.output).toContain("antigravity-task execution details");
     }
   });
 

@@ -38,8 +38,14 @@ function conversationIdOf(event: Readonly<Record<string, unknown>>, payload: Rea
 }
 
 export function initProgress(event: Readonly<Record<string, unknown>>): ProgressSnapshot {
-  const init = event["init"];
-  return { event: "init", conversationId: conversationIdOf(event, isRecord(init) ? init : null) };
+  const init = isRecord(event["init"]) ? event["init"] : null;
+  return {
+    event: "init",
+    conversationId: conversationIdOf(event, init),
+    model: init === null ? null : nullableString(init["model"]),
+    agent: init === null ? null : nullableString(init["agent"]),
+    permissionMode: init === null ? null : nullableString(init["permission_mode"]),
+  };
 }
 
 export function stepUpdateProgress(event: Readonly<Record<string, unknown>>): ProgressSnapshot {
@@ -51,6 +57,7 @@ export function stepUpdateProgress(event: Readonly<Record<string, unknown>>): Pr
       stepIndex: null,
       state: null,
       stepType: null,
+      toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
     };
@@ -61,6 +68,7 @@ export function stepUpdateProgress(event: Readonly<Record<string, unknown>>): Pr
     stepIndex: nullableInteger(payload["step_index"]),
     state: nullableString(payload["state"]),
     stepType: nullableString(payload["step_type"]),
+    toolName: nullableString(payload["tool_name"]),
     elapsedSeconds: nullableSeconds(payload["duration_seconds"]),
     totalTokens: totalTokensOf(payload["usage"]),
   };

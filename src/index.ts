@@ -16,7 +16,7 @@ import type { AntigravityTaskArgs, ProgressUpdate, RunnerDeps, ToolPayload } fro
 
 export const PACKAGE_IDENTITY = {
   name: "antigravity-task-plugin",
-  version: "0.0.0",
+  version: "0.0.1",
 } as const;
 
 export type PackageIdentity = typeof PACKAGE_IDENTITY;
@@ -52,12 +52,31 @@ export function progressToMetadata(update: ProgressUpdate): ProgressMetadata {
       if (conversationId !== null) {
         metadata["conversationId"] = conversationId;
       }
-      return { title: "antigravity-task: starting", metadata };
+      const model = sanitizedString(update.model);
+      if (model !== null) {
+        metadata["model"] = model;
+      }
+      const agent = sanitizedString(update.agent);
+      if (agent !== null) {
+        metadata["agent"] = agent;
+      }
+      const permissionMode = sanitizedString(update.permissionMode);
+      if (permissionMode !== null) {
+        metadata["permissionMode"] = permissionMode;
+      }
+      const title = model !== null ? `antigravity-task: starting (${model})` : "antigravity-task: starting";
+      return { title, metadata };
     }
     case "step_update": {
       const stepType = sanitizedString(update.stepType);
       const state = sanitizedString(update.state);
-      const phase = stepType !== null ? `step ${String(update.stepIndex)} ${stepType}` : "responding";
+      const toolName = sanitizedString(update.toolName);
+      let phase: string;
+      if (stepType === "tool" && toolName !== null) {
+        phase = `running tool ${toolName}`;
+      } else {
+        phase = stepType !== null ? `step ${String(update.stepIndex)} ${stepType}` : "responding";
+      }
       const metadata: Record<string, unknown> = { phase };
       const conversationId = sanitizedString(update.conversationId);
       if (conversationId !== null) {
@@ -71,6 +90,9 @@ export function progressToMetadata(update: ProgressUpdate): ProgressMetadata {
       }
       if (stepType !== null) {
         metadata["stepType"] = stepType;
+      }
+      if (toolName !== null) {
+        metadata["toolName"] = toolName;
       }
       if (update.elapsedSeconds !== null) {
         metadata["elapsedSeconds"] = update.elapsedSeconds;

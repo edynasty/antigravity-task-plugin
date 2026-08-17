@@ -173,6 +173,10 @@ export type AntigravityTaskMetadata =
       readonly diagnostics: readonly Diagnostic[];
       readonly droppedDiagnostics: number;
       readonly stderr: string;
+      readonly model: string | null;
+      readonly agent: string | null;
+      readonly permissionMode: string | null;
+      readonly durationSeconds: number | null;
     }
   | {
       readonly ok: false;
@@ -186,6 +190,10 @@ export type AntigravityTaskMetadata =
       readonly diagnostics: readonly Diagnostic[];
       readonly droppedDiagnostics: number;
       readonly stderr: string;
+      readonly model: string | null;
+      readonly agent: string | null;
+      readonly permissionMode: string | null;
+      readonly durationSeconds: number | null;
     };
 
 /** Shape returned by the tool; structurally assignable to the framework ToolResult. */

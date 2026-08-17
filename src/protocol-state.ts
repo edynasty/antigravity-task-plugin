@@ -47,6 +47,10 @@ export class ProtocolState {
   private failure: Failure | null = null;
   private terminalResult: ResultPayload | null = null;
   private conversationId: string | null = null;
+  private model: string | null = null;
+  private agent: string | null = null;
+  private permissionMode: string | null = null;
+  private durationSeconds: number | null = null;
   private textLength = 0;
   private textTruncated = false;
   private droppedDiagnostics = 0;
@@ -75,6 +79,15 @@ export class ProtocolState {
           this.conversationId = embedded;
         }
       }
+    }
+    if (this.model === null && typeof payload["model"] === "string") {
+      this.model = payload["model"];
+    }
+    if (this.agent === null && typeof payload["agent"] === "string") {
+      this.agent = payload["agent"];
+    }
+    if (this.permissionMode === null && typeof payload["permission_mode"] === "string") {
+      this.permissionMode = payload["permission_mode"];
     }
   }
 
@@ -117,6 +130,9 @@ export class ProtocolState {
     if (this.conversationId === null) {
       this.conversationId = parsed.value.conversation_id;
     }
+    if (this.durationSeconds === null && typeof parsed.value.duration_seconds === "number") {
+      this.durationSeconds = parsed.value.duration_seconds;
+    }
   }
 
   addDiagnostic(diagnostic: Diagnostic): void {
@@ -131,6 +147,12 @@ export class ProtocolState {
     const usage = this.computeUsage();
     const diagnostics = this.diagnostics;
     const droppedDiagnostics = this.droppedDiagnostics;
+    const info = {
+      model: this.model,
+      agent: this.agent,
+      permissionMode: this.permissionMode,
+      durationSeconds: this.durationSeconds,
+    };
     if (this.failure !== null) {
       return {
         kind: "failure",
@@ -141,6 +163,7 @@ export class ProtocolState {
         usage,
         diagnostics,
         droppedDiagnostics,
+        ...info,
       };
     }
     const result = this.terminalResult;
@@ -154,6 +177,7 @@ export class ProtocolState {
         usage,
         diagnostics,
         droppedDiagnostics,
+        ...info,
       };
     }
     if (result.status !== "SUCCESS") {
@@ -166,6 +190,7 @@ export class ProtocolState {
         usage,
         diagnostics,
         droppedDiagnostics,
+        ...info,
       };
     }
     const text = result.response !== "" ? this.capResponse(result.response) : this.textParts.join("");
@@ -179,6 +204,7 @@ export class ProtocolState {
         usage,
         diagnostics,
         droppedDiagnostics,
+        ...info,
       };
     }
     return {
@@ -189,6 +215,7 @@ export class ProtocolState {
       usage,
       diagnostics,
       droppedDiagnostics,
+      ...info,
     };
   }
 

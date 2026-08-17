@@ -61,7 +61,8 @@ describe("packed release candidate (antigravity-task)", () => {
       return;
     }
     expect(result.title).toBe("antigravity-task: SUCCESS");
-    expect(result.output).toBe("fake-agy success response: deterministic scaffold fixture.");
+    expect(result.output).toContain("fake-agy success response: deterministic scaffold fixture.");
+    expect(result.output).toContain("antigravity-task execution details");
     expect(result.metadata.conversationId).toBe(FAKE_AGY_CONVERSATION_ID);
     expect(result.metadata.usage.total_tokens).toBe(15);
     expect(result.metadata.provenance).toMatch(/execute mode may modify files/);

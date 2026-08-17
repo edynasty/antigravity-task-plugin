@@ -61,7 +61,8 @@ describe("antigravity-task plugin", () => {
       return;
     }
     expect(result.title).toBe("antigravity-task: SUCCESS");
-    expect(result.output).toBe("final answer.");
+    expect(result.output).toContain("final answer.");
+    expect(result.output).toContain("antigravity-task execution details");
     expect(result.metadata.ok).toBe(true);
     if (result.metadata.ok) {
       expect(result.metadata.conversationId).toBe(CONVERSATION_ID);
