@@ -11,6 +11,7 @@ import { ZERO_USAGE } from "./protocol.js";
 import type { Diagnostic, ParserOutcome, Status, Usage } from "./protocol.js";
 import type { ProcessExit, ResolveErrorKind } from "./process-types.js";
 import { redactCredentials } from "./redaction.js";
+import { composeTitle } from "./title.js";
 import {
   boundDiagnosticText,
   sanitizeDiagnostics,
@@ -193,9 +194,9 @@ export function payloadFromMetadata(
 ): ToolPayload {
   const body = metadata.ok ? metadata.text : metadata.message;
   const detail = executionDetail(args, metadata);
-  return metadata.ok
-    ? { title: "antigravity-task: SUCCESS", output: `${body}\n\n${detail}`, metadata }
-    : { title: `antigravity-task: ${metadata.kind}`, output: `${body}\n\n${detail}`, metadata };
+  const kind = metadata.ok ? "SUCCESS" : metadata.kind;
+  const title = composeTitle(kind, metadata.model, args.task);
+  return { title, output: `${body}\n\n${detail}`, metadata };
 }
 
 export const MAX_DETAIL_FIELD_CHARS = 200;

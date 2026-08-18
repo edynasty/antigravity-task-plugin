@@ -53,6 +53,8 @@ function emitInit(): void {
       cwd: process.cwd(),
       tools: ["run_command", "write_to_file"],
       permission_mode: "request-review",
+      model: "claude-sonnet-4-6",
+      agent: "fake-agy-agent",
     },
   });
 }

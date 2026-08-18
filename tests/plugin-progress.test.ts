@@ -66,7 +66,7 @@ describe("antigravity-task tool live progress", () => {
     fake.setRunResult(processResult({ stdout: successStream("final answer.") }));
     const result = await createAntigravityTaskTool(fake.deps).execute({ task: "do it" }, context);
 
-    expect(result).toMatchObject({ title: "antigravity-task: SUCCESS" });
+    expect(result).toMatchObject({ title: "antigravity-task: SUCCESS (unknown) — do it" });
     expect(updates.length).toBeGreaterThanOrEqual(2);
     expect(updates[0]?.title).toBe("antigravity-task: starting");
     expect(updates.filter((update) => update.title === "antigravity-task: SUCCESS").length).toBe(1);
@@ -94,7 +94,7 @@ describe("antigravity-task tool live progress", () => {
     fake.setRunResult(processResult({ chunks: lineChunks([initLine(), invalidResult]) }));
     const result = await createAntigravityTaskTool(fake.deps).execute({ task: "invalid" }, context);
 
-    expect(result).toMatchObject({ title: "antigravity-task: invalid-result" });
+    expect(result).toMatchObject({ title: "antigravity-task: invalid-result (unknown) — invalid" });
     const titles = updates.map((update) => update.title);
     expect(titles.filter((title) => title === "antigravity-task: SUCCESS")).toEqual([]);
     expect(titles[titles.length - 1]).toBe("antigravity-task: invalid-result");
@@ -108,7 +108,7 @@ describe("antigravity-task tool live progress", () => {
     );
     const result = await createAntigravityTaskTool(fake.deps).execute({ task: "dup" }, context);
 
-    expect(result).toMatchObject({ title: "antigravity-task: duplicate-result" });
+    expect(result).toMatchObject({ title: "antigravity-task: duplicate-result (unknown) — dup" });
     const titles = updates.map((update) => update.title);
     expect(titles.filter((title) => title === "antigravity-task: SUCCESS")).toEqual([]);
     expect(titles[titles.length - 1]).toBe("antigravity-task: duplicate-result");
@@ -180,7 +180,7 @@ describe("antigravity-task tool live progress", () => {
     const fake = makeFakeDeps();
     fake.setRunResult(processResult({ stdout: successStream("final answer.") }));
     const result = await createAntigravityTaskTool(fake.deps).execute({ task: "do it" }, context);
-    expect(result).toMatchObject({ title: "antigravity-task: SUCCESS" });
+    expect(result).toMatchObject({ title: "antigravity-task: SUCCESS (unknown) — do it" });
   });
 
   test("no metadata updates occur after execute resolves", async () => {
@@ -220,7 +220,7 @@ describe("antigravity-task tool live progress", () => {
   test("failure paths emit a final bounded failure title before returning the payload", async () => {
     const { context, updates } = metadataRecorder();
     const result = await createAntigravityTaskTool(makeFakeDeps().deps).execute({ task: "   " }, context);
-    expect(result).toMatchObject({ title: "antigravity-task: empty-task" });
+    expect(result).toMatchObject({ title: "antigravity-task: empty-task (unknown) — (no task)" });
     expect(updates[updates.length - 1]?.title).toBe("antigravity-task: empty-task");
   });
 
@@ -229,7 +229,7 @@ describe("antigravity-task tool live progress", () => {
     const fake = makeFakeDeps();
     fake.failRun(new ProcessError("timeout", "agy run exceeded the host timeout", { pid: 9, exit: { exitCode: null, signal: "SIGTERM" } }));
     const result = await createAntigravityTaskTool(fake.deps).execute({ task: "t" }, context);
-    expect(result).toMatchObject({ title: "antigravity-task: timeout" });
+    expect(result).toMatchObject({ title: "antigravity-task: timeout (unknown) — t" });
     expect(updates[updates.length - 1]?.title).toBe("antigravity-task: timeout");
   });
 });

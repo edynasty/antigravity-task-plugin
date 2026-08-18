@@ -60,7 +60,7 @@ describe("antigravity-task plugin", () => {
     if (!isToolPayload(result)) {
       return;
     }
-    expect(result.title).toBe("antigravity-task: SUCCESS");
+    expect(result.title).toBe("antigravity-task: SUCCESS (unknown) — do it");
     expect(result.output).toContain("final answer.");
     expect(result.output).toContain("antigravity-task execution details");
     expect(result.metadata.ok).toBe(true);
@@ -105,7 +105,7 @@ describe("antigravity-task plugin", () => {
     if (!isToolPayload(result)) {
       return;
     }
-    expect(result.title).toBe("antigravity-task: status");
+    expect(result.title).toBe("antigravity-task: status (unknown) — t");
     expect(result.metadata.ok).toBe(false);
     if (!result.metadata.ok) {
       expect(result.metadata.kind).toBe("status");

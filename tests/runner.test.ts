@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { ProcessError, ResolveError } from "../src/process-types";
 import type { ProcessExit } from "../src/process-types";
-import { runAntigravityTask } from "../src/runner";
+import type { ToolPayload } from "../src/runner-types";
+import { MAX_TITLE_CHARS, runAntigravityTask, titleExcerpt } from "../src/runner";
 import {
   CONVERSATION_ID,
   initLine,
@@ -27,7 +28,7 @@ describe("runAntigravityTask composition", () => {
     if (payload.metadata.ok) {
       expect(payload.output).toContain("final answer.");
       expect(payload.output).toContain("antigravity-task execution details");
-      expect(payload.title).toBe("antigravity-task: SUCCESS");
+      expect(payload.title).toBe("antigravity-task: SUCCESS (unknown) — do it");
       expect(payload.metadata.kind).toBe("success");
       expect(payload.metadata.status).toBe("SUCCESS");
       expect(payload.metadata.conversationId).toBe(CONVERSATION_ID);
@@ -126,7 +127,7 @@ describe("runAntigravityTask composition", () => {
       if (!payload.metadata.ok) {
         expect(payload.metadata.kind).toBe("status");
         expect(payload.metadata.status).toBe(status);
-        expect(payload.title).toBe("antigravity-task: status");
+        expect(payload.title).toBe("antigravity-task: status (unknown) — t");
       }
     }
   });
@@ -200,5 +201,129 @@ describe("runAntigravityTask composition", () => {
         expect(payload.metadata.exit).toEqual(entry.exit);
       }
     }
+  });
+});
+
+describe("final tool title composition (model + task excerpt)", () => {
+  function runWithInit(initExtra: Readonly<Record<string, unknown>>, task: string, stream: string): Promise<ToolPayload> {
+    const fake = makeFakeDeps();
+    const init = JSON.stringify({
+      event: "init",
+      conversation_id: CONVERSATION_ID,
+      init: { cwd: "/w", tools: [], permission_mode: "request-review", ...initExtra },
+    });
+    fake.setRunResult(processResult({ stdout: `${init}\n${stream}\n` }));
+    const { ctx } = runContext();
+    return runAntigravityTask({ task }, ctx, fake.deps);
+  }
+
+  test("success title carries the actual agy model and the first task line", async () => {
+    const payload = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      "git push origin main",
+      resultLine("SUCCESS", "pushed."),
+    );
+
+    expect(payload.metadata.ok).toBe(true);
+    expect(payload.title).toBe("antigravity-task: SUCCESS (claude-sonnet-4-6) — git push origin main");
+  });
+
+  test("failure title carries the model and the task excerpt for every kind", async () => {
+    const payload = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      "Final read-only verification of the release",
+      resultLine("ERROR", "", { error: "boom" }),
+    );
+    const payload2 = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      "Final read-only verification of the release",
+      resultLine("SUCCESS", "ok"),
+    );
+
+    expect(payload.metadata.ok).toBe(false);
+    if (!payload.metadata.ok) {
+      expect(payload.title).toBe(
+        "antigravity-task: status (claude-sonnet-4-6) — Final read-only verification of the release",
+      );
+    }
+    expect(payload2.metadata.ok).toBe(true);
+    if (payload2.metadata.ok) {
+      expect(payload2.title).toBe(
+        "antigravity-task: SUCCESS (claude-sonnet-4-6) — Final read-only verification of the release",
+      );
+    }
+  });
+
+  test("init without a model reports (unknown) in the final title", async () => {
+    const payload = await runWithInit({}, "git push origin main", resultLine("SUCCESS", "ok"));
+
+    expect(payload.metadata.ok).toBe(true);
+    expect(payload.title).toBe("antigravity-task: SUCCESS (unknown) — git push origin main");
+  });
+
+  test("multi-line task yields an excerpt of the first line only", async () => {
+    const payload = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      "first line of the task\nsecond line of the task",
+      resultLine("SUCCESS", "ok"),
+    );
+
+    expect(payload.title).toBe("antigravity-task: SUCCESS (claude-sonnet-4-6) — first line of the task");
+  });
+
+  test("a long first line is bounded to 60 chars with an ellipsis", async () => {
+    const firstLine = "x".repeat(80);
+    const payload = await runWithInit({ model: "claude-sonnet-4-6" }, `${firstLine}\nsecond line`, resultLine("SUCCESS", "ok"));
+
+    const expectedExcerpt = `${"x".repeat(60)}…`;
+    expect(payload.title).toBe(`antigravity-task: SUCCESS (claude-sonnet-4-6) — ${expectedExcerpt}`);
+    expect(payload.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+  });
+
+  test("credential-shaped task content is redacted before the excerpt is bounded", async () => {
+    const secretKey = "sk-ant-1234567890abcdef1234567890abcdef";
+    const secretApiKey = "api_key=abc12345xyz";
+    const payload = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      `${secretKey} then ${secretApiKey}`,
+      resultLine("SUCCESS", "ok"),
+    );
+
+    expect(payload.title).toContain("[REDACTED] then [REDACTED]");
+    expect(payload.title).not.toContain(secretKey);
+    expect(payload.title).not.toContain(secretApiKey);
+  });
+
+  test("blank or whitespace-only first line yields the (no task) placeholder", async () => {
+    const blank = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      "first line\n   \n\t",
+      resultLine("SUCCESS", "ok"),
+    );
+    expect(blank.title).toBe("antigravity-task: SUCCESS (claude-sonnet-4-6) — first line");
+
+    expect(titleExcerpt("   \n\t")).toBe("(no task)");
+    expect(titleExcerpt("")).toBe("(no task)");
+  });
+
+  test("the full title stays within 140 chars for a 60-char excerpt, kind and model", async () => {
+    const firstLine = "x".repeat(60);
+    const payload = await runWithInit({ model: "claude-sonnet-4-6" }, `${firstLine}\nignored second line`, resultLine("SUCCESS", "ok"));
+    const payload2 = await runWithInit(
+      { model: "claude-sonnet-4-6" },
+      `${firstLine}\nignored second line`,
+      resultLine("ERROR", "", { error: "boom" }),
+    );
+
+    expect(payload.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+    expect(payload2.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+  });
+
+  test("titleExcerpt is a pure first-line redacted-before-bounded transform", () => {
+    expect(titleExcerpt("  first line  \nsecond line")).toBe("first line");
+    expect(titleExcerpt(`sk-ant-1234567890abcdef1234567890abcdef ${"y".repeat(80)}`)).toBe(
+      `[REDACTED] ${"y".repeat(49)}…`,
+    );
+    expect(titleExcerpt("short")).toBe("short");
   });
 });

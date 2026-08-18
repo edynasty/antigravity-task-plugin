@@ -60,7 +60,7 @@ describe("packed release candidate (antigravity-task)", () => {
     if (!result.metadata.ok) {
       return;
     }
-    expect(result.title).toBe("antigravity-task: SUCCESS");
+    expect(result.title).toBe("antigravity-task: SUCCESS (claude-sonnet-4-6) — task; echo PWNED $(rm -rf /) &");
     expect(result.output).toContain("fake-agy success response: deterministic scaffold fixture.");
     expect(result.output).toContain("antigravity-task execution details");
     expect(result.metadata.conversationId).toBe(FAKE_AGY_CONVERSATION_ID);
@@ -114,7 +114,7 @@ describe("packed release candidate (antigravity-task)", () => {
     }
     expect(result.metadata.kind).toBe("status");
     expect(result.metadata.status).toBe("ERROR");
-    expect(result.title).toBe("antigravity-task: status");
+    expect(result.title).toBe("antigravity-task: status (claude-sonnet-4-6) — boom");
     expect(result.output).toMatch(/status ERROR/);
     expect(result.metadata.exit?.exitCode).toBe(1);
 

@@ -13,6 +13,7 @@ import type { ProcessExit } from "./process-types.js";
 import { resolveAgy, runAgy } from "./process.js";
 import type { DiscoveryOptions, ProcessResult } from "./process.js";
 import { metadataFromParser, payloadFromMetadata, processFailure, resolveFailure, validationMetadata } from "./metadata.js";
+export { MAX_TITLE_CHARS, titleExcerpt } from "./title.js";
 import {
   emitProgress,
   riskNote,
