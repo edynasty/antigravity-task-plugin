@@ -47,11 +47,19 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseOptionalToken(value: string | undefined): string | null {
+  if (value === undefined) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
 export function gatewayConfigFromEnv(env: Readonly<Record<string, string | undefined>>): GatewayConfig {
   return {
     host: env["AGY_GATEWAY_HOST"] ?? "127.0.0.1",
     port: parsePort(env["AGY_GATEWAY_PORT"], 8787),
-    token: env["AGY_GATEWAY_TOKEN"] ?? null,
+    token: parseOptionalToken(env["AGY_GATEWAY_TOKEN"]),
     maxQueue: parsePositiveInt(env["AGY_GATEWAY_MAX_QUEUE"], 8),
     defaultTimeoutSeconds: parsePositiveInt(env["AGY_GATEWAY_TIMEOUT_S"], 300),
     modelsTtlSeconds: parsePositiveInt(env["AGY_GATEWAY_MODELS_TTL_S"], 3600),
@@ -98,6 +106,12 @@ export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): S
         `[agy-gateway] ${req.method ?? "?"} ${pathname} ${meta.status} ${Date.now() - started}ms${meta.model !== null ? ` model=${meta.model}` : ""}`,
       );
     });
+    if (pathname === "/v1" || pathname === "/") {
+      if (req.method === "GET") {
+        sendJson(res, 200, { status: "ok" });
+        return;
+      }
+    }
     if (!authorizationMatches(req, config.token)) {
       meta.status = 401;
       sendJsonError(res, new GatewayHttpError(401, "invalid_api_key", "authentication_error", "invalid bearer token"));
@@ -123,12 +137,6 @@ export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): S
         return;
       case "GET /v1/models":
         modelsRoute(res, deps, config);
-        return;
-      case "GET /v1":
-      case "GET /":
-        // OpenAI-compatible SDKs sometimes probe the bare baseURL (GET /v1)
-        // or the root before first use; answer 200 so the provider passes.
-        sendJson(res, 200, { status: "ok" });
         return;
       default: {
         meta.status = 404;

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProcessError, ResolveError } from "../../src/process-types";
 import { BUILTIN_MODELS } from "../../src/gateway/models";
+import { gatewayConfigFromEnv } from "../../src/gateway/server";
 import { HOST_GRACE_MS } from "../../src/process-types";
 import {
   GW_CONVERSATION_ID,
@@ -477,5 +478,22 @@ describe("gateway routing", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { status: string };
     expect(body.status).toBe("ok");
+  });
+
+  test("GET / and GET /v1 answer 200 without auth header even when token is configured", async () => {
+    const { baseUrl } = await spawn({ token: "secret-token" });
+    const probeV1 = await fetch(baseUrl + "/v1");
+    expect(probeV1.status).toBe(200);
+    const probeRoot = await fetch(baseUrl + "/");
+    expect(probeRoot.status).toBe(200);
+  });
+});
+
+describe("gatewayConfigFromEnv", () => {
+  test("parses empty or whitespace token env as null", () => {
+    expect(gatewayConfigFromEnv({}).token).toBeNull();
+    expect(gatewayConfigFromEnv({ AGY_GATEWAY_TOKEN: "" }).token).toBeNull();
+    expect(gatewayConfigFromEnv({ AGY_GATEWAY_TOKEN: "   " }).token).toBeNull();
+    expect(gatewayConfigFromEnv({ AGY_GATEWAY_TOKEN: "my-token" }).token).toBe("my-token");
   });
 });
