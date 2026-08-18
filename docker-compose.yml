@@ -2,10 +2,10 @@
 # that spawns the local agy CLI as a subprocess. The gateway NEVER calls any
 # API directly (direct API access causes account bans).
 #
-# NOTE: the config volume is a BIND MOUNT (./agy-config, not a named volume)
-# so the README settings.json bootstrap works straight from the host — named
-# volumes on macOS live inside the Docker VM and cannot be pre-seeded with a
-# settings.json file. agy caches and settings persist across restarts there.
+# AUTH: the container has no OS keyring, so instead of re-authenticating, the
+# host's agy login state (~/.gemini) is bind-mounted into the container — the
+# OAuth subscription credentials are reused as-is. This is a BIND MOUNT (not a
+# named volume) so the existing login survives container rebuilds.
 services:
   agy-gateway:
     build: .
@@ -13,18 +13,26 @@ services:
     ports:
       - "8787:8787"
     environment:
-      # Required for agy headless auth inside the container (no OS keyring).
-      # Compose fails loudly when it is missing — set it in .env.
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env}
+      # Optional: a Gemini API key (with "modelProvider": "gemini" in the
+      # mounted settings.json) is an alternative headless auth path, but the
+      # default is the bind-mounted OAuth login — no key needed.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # Optional: when set, the gateway requires Authorization: Bearer <token>.
       AGY_GATEWAY_TOKEN: ${AGY_GATEWAY_TOKEN:-}
       # Optional passthrough of the gateway tuning knobs (see README).
       AGY_GATEWAY_MAX_QUEUE: ${AGY_GATEWAY_MAX_QUEUE:-8}
       AGY_GATEWAY_TIMEOUT_S: ${AGY_GATEWAY_TIMEOUT_S:-300}
       AGY_GATEWAY_MODELS_TTL_S: ${AGY_GATEWAY_MODELS_TTL_S:-3600}
+      # Proxy passthrough: agy's eligibility check and model requests need to
+      # reach Google; behind GFW-style networks the container MUST inherit the
+      # host proxy (docker containers do NOT get it automatically).
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
     volumes:
-      # agy config: settings.json ("modelProvider": "gemini") + caches.
-      - ./agy-config:/root/.gemini
+      # Host agy login state (OAuth credentials, settings, caches) — the
+      # container reuses the host subscription, so `agy login` is never needed.
+      - ${HOME:-~}/.gemini:/root/.gemini
       # agy agent-mode (accept-edits) working directory — what agy may modify.
       - ${PWD:-.}/workspace:/workspace
     restart: unless-stopped

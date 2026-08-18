@@ -438,6 +438,7 @@ AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
 | `AGY_GATEWAY_MODELS_TTL_S` | `3600` | `agy models` cache TTL |
 | `AGY_GATEWAY_CACHE_DIR` | `~/.agy-gateway` | Model cache directory |
 | `AGY_GATEWAY_CWD` | process cwd | agy's working directory (agent-mode runs operate relative to it) |
+| `AGY_GATEWAY_STREAM_STEPS` | `1` | Stream agy tool steps as visible `[agy: <tool>]` text deltas so clients show activity during tool phases; set `0` or `false` to emit only model text |
 
 **Serial queue**: at most ONE agy task runs at a time (ban avoidance). Concurrent requests wait
 FIFO; a client disconnect removes its queued job.
@@ -509,10 +510,13 @@ hard response cap of ~4 UTF-16 code units per token. Request `mode: "plan"` maps
 ### Responses
 
 `stream=true` (default): SSE chunks shaped as OpenAI `chat.completion.chunk` objects, one per
-agy `step_update.text_delta`, then a `finish_reason:"stop"` chunk, an optional
-`data: {"conversation_id":"..."}` line, and `data: [DONE]`. Streaming headers are written when
-the agy run starts, so pre-run failures (auth, validation, queue full, upstream 500) come back
-as normal JSON errors.
+agy `step_update.text_delta`, then a `finish_reason:"stop"` chunk and `data: [DONE]`. Tool
+steps stream as `[agy: <tool>]` activity deltas (disable via `AGY_GATEWAY_STREAM_STEPS=0`).
+The conversation id rides in an SSE **comment line** (`: conversation_id=<id>`), which strict
+OpenAI clients ignore — it is never emitted as a `data:` payload, because clients such as the
+AI SDK reject non-standard `data:` JSON. Streaming headers are written when the agy run
+starts, so pre-run failures (auth, validation, queue full, upstream 500) come back as normal
+JSON errors.
 
 `stream=false`: a full `chat.completion` object with `usage` (from the agy result) and
 `conversation_id`.
@@ -520,8 +524,8 @@ as normal JSON errors.
 ### Conversation continuation
 
 Pass the non-standard body field `conversationId` or the `x-agy-conversation` header to resume a
-conversation (`--conversation <id>`). The resulting id is surfaced via the trailing SSE
-`conversation_id` line (stream) or the `conversation_id` field (non-stream).
+conversation (`--conversation <id>`). The resulting id is surfaced via the SSE comment line
+(stream) or the `conversation_id` field (non-stream).
 
 ### Models
 
@@ -564,18 +568,20 @@ built-in fetch (`node:22-slim` has no `curl`). agy agent-mode runs operate in
 `/workspace` (`AGY_GATEWAY_CWD`), so bind-mount a directory there if you want
 agy's file edits to land on the host.
 
-#### Authentication inside the container (Gemini API key)
+#### Authentication inside the container (reuse the host login)
 
 agy normally authenticates via the OS keyring (macOS Keychain / Linux Secret
 Service). A container has **no keyring**, so interactive `agy login` is not
-possible. The official supported headless path — see
-[Using a Gemini API key](https://antigravity.google/docs/cli/install/) — is to
-set `"modelProvider": "gemini"` in `settings.json` and pass `GEMINI_API_KEY`:
+possible. Instead the compose file bind-mounts the host's agy login state
+(`~/.gemini` — OAuth credentials, settings, caches) to `/root/.gemini`, so the
+container reuses your existing agy subscription with **no key needed** and no
+re-authentication.
 
-```bash
-mkdir -p agy-config/antigravity-cli
-echo '{"modelProvider":"gemini"}' > agy-config/antigravity-cli/settings.json
-```
+Alternative headless path — see
+[Using a Gemini API key](https://antigravity.google/docs/cli/install/) — is to
+set `"modelProvider": "gemini"` in the mounted `settings.json` and pass
+`GEMINI_API_KEY`; the compose `environment` passes it through when set. Only
+use this when you cannot mount a host login (e.g. a remote server).
 
 The gateway still **never calls any API directly**: agy runs as a local
 subprocess inside the container and talks to the gateway over its stdio NDJSON
@@ -584,34 +590,44 @@ account bans.
 
 #### docker-compose
 
-Create a `.env` next to `docker-compose.yml`:
+Create a `.env` next to `docker-compose.yml` (auth is the bind-mounted host
+login, so no key is required — only set `GEMINI_API_KEY` if you use the
+Gemini-key alternative):
 
 ```bash
-# Required: agy headless auth (modelProvider: "gemini", see above).
-GEMINI_API_KEY=your-gemini-api-key-here
 # Optional: require Authorization: Bearer <token> on the gateway.
 #AGY_GATEWAY_TOKEN=change-me
+# Optional: alternative headless auth via a Gemini API key
+# (requires "modelProvider": "gemini" in the mounted settings.json).
+#GEMINI_API_KEY=your-gemini-api-key-here
 ```
 
-`docker compose up` fails loudly with `set GEMINI_API_KEY in .env` if the key
-is missing. Then:
+Then:
 
 ```bash
-# One-time bootstrap (also shown above): enable the Gemini API key provider.
-mkdir -p agy-config/antigravity-cli
-echo '{"modelProvider":"gemini"}' > agy-config/antigravity-cli/settings.json
-
 docker compose up -d --build
 curl -s http://127.0.0.1:8787/v1/models
 ```
 
 What compose mounts:
 
-- `./agy-config` → `/root/.gemini` — agy's `settings.json` and caches; a bind
-  mount so you can edit the settings file directly from the host.
+- `${HOME}/.gemini` → `/root/.gemini` — the **host's agy login state** (OAuth
+  credentials, settings, caches); the container reuses your existing
+  subscription, so `agy login` is never needed inside the container.
 - `${PWD:-.}/workspace` → `/workspace` — agy's working directory; **agy agent
   mode (`accept-edits`) may create or modify files here**, review it like any
   other workspace.
+
+Compose passes `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` through from the host
+environment (empty by default). Docker containers do **not** inherit the host
+proxy automatically, and agy's eligibility check plus model requests must reach
+Google — behind a GFW-style network the container fails with
+`Eligibility check failed: Get "https://...` unless the proxy is exported:
+
+```bash
+export HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890
+docker compose up -d --build
+```
 
 If the container is exposed beyond localhost, set `AGY_GATEWAY_TOKEN` (and the
 matching `Authorization: Bearer` header in your client) — without a token the
