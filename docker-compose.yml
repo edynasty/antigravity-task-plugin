@@ -1,0 +1,30 @@
+# Docker deployment for the agy-gateway: an OpenAI-compatible HTTP gateway
+# that spawns the local agy CLI as a subprocess. The gateway NEVER calls any
+# API directly (direct API access causes account bans).
+#
+# NOTE: the config volume is a BIND MOUNT (./agy-config, not a named volume)
+# so the README settings.json bootstrap works straight from the host — named
+# volumes on macOS live inside the Docker VM and cannot be pre-seeded with a
+# settings.json file. agy caches and settings persist across restarts there.
+services:
+  agy-gateway:
+    build: .
+    image: agy-gateway:latest
+    ports:
+      - "8787:8787"
+    environment:
+      # Required for agy headless auth inside the container (no OS keyring).
+      # Compose fails loudly when it is missing — set it in .env.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env}
+      # Optional: when set, the gateway requires Authorization: Bearer <token>.
+      AGY_GATEWAY_TOKEN: ${AGY_GATEWAY_TOKEN:-}
+      # Optional passthrough of the gateway tuning knobs (see README).
+      AGY_GATEWAY_MAX_QUEUE: ${AGY_GATEWAY_MAX_QUEUE:-8}
+      AGY_GATEWAY_TIMEOUT_S: ${AGY_GATEWAY_TIMEOUT_S:-300}
+      AGY_GATEWAY_MODELS_TTL_S: ${AGY_GATEWAY_MODELS_TTL_S:-3600}
+    volumes:
+      # agy config: settings.json ("modelProvider": "gemini") + caches.
+      - ./agy-config:/root/.gemini
+      # agy agent-mode (accept-edits) working directory — what agy may modify.
+      - ${PWD:-.}/workspace:/workspace
+    restart: unless-stopped

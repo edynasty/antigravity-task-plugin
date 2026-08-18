@@ -535,6 +535,85 @@ auth, and array-of-parts message content. The request `model` is passed verbatim
 agy validates it, and an invalid model surfaces as a 500 with the (credential-redacted) agy
 detail.
 
+### Docker deployment
+
+The gateway can be deployed as a container. The `Dockerfile` is multi-stage on
+`node:22-slim`: a build stage runs `npm install` (the repo has no
+`package-lock.json` — only `bun.lock` — so plain `npm install` is used) and
+`npm run build`, and a lean runtime stage installs the official agy CLI
+(`curl -fsSL https://antigravity.google/cli/install.sh | bash`, installed to
+`/root/.local/bin/agy`) and runs only the compiled `dist/`. No node_modules, no
+devDependencies, and no credentials are baked into the image.
+
+#### Build and run (plain docker)
+
+```bash
+docker build -t agy-gateway .
+docker run -d --name agy-gateway -p 8787:8787 agy-gateway
+curl -s http://127.0.0.1:8787/v1          # → 200 {"status":"ok"}
+curl -s http://127.0.0.1:8787/v1/models   # → 200 {"object":"list","data":[...]}
+```
+
+The image sets `AGY_GATEWAY_HOST=0.0.0.0` because the gateway's default bind
+address is `127.0.0.1`, which would be unreachable from the host once the port
+is published with `-p 8787:8787`. A `HEALTHCHECK` probes `GET /v1` using Node's
+built-in fetch (`node:22-slim` has no `curl`). agy agent-mode runs operate in
+`/workspace` (`AGY_GATEWAY_CWD`), so bind-mount a directory there if you want
+agy's file edits to land on the host.
+
+#### Authentication inside the container (Gemini API key)
+
+agy normally authenticates via the OS keyring (macOS Keychain / Linux Secret
+Service). A container has **no keyring**, so interactive `agy login` is not
+possible. The official supported headless path — see
+[Using a Gemini API key](https://antigravity.google/docs/cli/install/) — is to
+set `"modelProvider": "gemini"` in `settings.json` and pass `GEMINI_API_KEY`:
+
+```bash
+mkdir -p agy-config/antigravity-cli
+echo '{"modelProvider":"gemini"}' > agy-config/antigravity-cli/settings.json
+```
+
+The gateway still **never calls any API directly**: agy runs as a local
+subprocess inside the container and talks to the gateway over its stdio NDJSON
+protocol, exactly as on the host. Direct-API approaches are known to cause
+account bans.
+
+#### docker-compose
+
+Create a `.env` next to `docker-compose.yml`:
+
+```bash
+# Required: agy headless auth (modelProvider: "gemini", see above).
+GEMINI_API_KEY=your-gemini-api-key-here
+# Optional: require Authorization: Bearer <token> on the gateway.
+#AGY_GATEWAY_TOKEN=change-me
+```
+
+`docker compose up` fails loudly with `set GEMINI_API_KEY in .env` if the key
+is missing. Then:
+
+```bash
+# One-time bootstrap (also shown above): enable the Gemini API key provider.
+mkdir -p agy-config/antigravity-cli
+echo '{"modelProvider":"gemini"}' > agy-config/antigravity-cli/settings.json
+
+docker compose up -d --build
+curl -s http://127.0.0.1:8787/v1/models
+```
+
+What compose mounts:
+
+- `./agy-config` → `/root/.gemini` — agy's `settings.json` and caches; a bind
+  mount so you can edit the settings file directly from the host.
+- `${PWD:-.}/workspace` → `/workspace` — agy's working directory; **agy agent
+  mode (`accept-edits`) may create or modify files here**, review it like any
+  other workspace.
+
+If the container is exposed beyond localhost, set `AGY_GATEWAY_TOKEN` (and the
+matching `Authorization: Bearer` header in your client) — without a token the
+gateway is unauthenticated on its published port.
+
 ## Official documentation
 
 - [Antigravity agy headless CLI](https://antigravity.google/docs/cli/headless)

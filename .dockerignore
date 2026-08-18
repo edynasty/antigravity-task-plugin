@@ -1,0 +1,30 @@
+# Build context only needs what the Dockerfile COPYs:
+#   package.json, tsconfig.json, tsconfig.build.json, src/
+# Everything else is excluded to keep the context (and cache keys) minimal.
+
+# Dependencies / build output (never baked into the image)
+node_modules
+dist
+package-lock.json
+npm-debug.log*
+yarn-error.log*
+
+# VCS / CI / tooling
+.git
+.github
+.gitignore
+.omo
+.codegraph
+
+# Tests / harnesses (dev-only, not needed by the gateway image)
+tests
+
+# Docs / license (README and LICENSE are not COPYed into the image)
+*.md
+LICENSE
+
+# Lockfiles not used by the npm build path
+bun.lock
+
+# OS noise
+.DS_Store
