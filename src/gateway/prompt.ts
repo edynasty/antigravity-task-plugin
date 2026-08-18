@@ -15,13 +15,16 @@
  *   <assistant content verbatim>
  *   </assistant>
  *
- * Roles other than system/user/assistant are rejected at the boundary; content
- * must be a plain string (OpenAI's array-of-parts content is out of scope).
+ * Roles: system/user/assistant are mapped to their tags; the OpenAI `tool`
+ * role is accepted and framed as `<tool>`. Content accepts both a plain
+ * string and OpenAI's array-of-parts form: `text` parts are joined, image and
+ * other non-text parts are dropped (agy's prompt is plain text, so images
+ * cannot be passed); null/missing content becomes an empty string.
  * The `mode` field is a separate request field passed to `--mode` as a CLI
  * flag — it is NEVER injected into this prompt text.
  */
 
-export const PROMPT_ROLES = ["system", "user", "assistant"] as const;
+export const PROMPT_ROLES = ["system", "user", "assistant", "tool"] as const;
 export type PromptRole = (typeof PROMPT_ROLES)[number];
 
 export interface OpenAIMessage {
@@ -41,6 +44,27 @@ function roleOf(value: unknown): PromptRole | null {
   return typeof value === "string" && (PROMPT_ROLES as readonly string[]).includes(value) ? (value as PromptRole) : null;
 }
 
+function contentToString(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (content === null || content === undefined) {
+    return "";
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!isRecord(part) || part["type"] !== "text" || typeof part["text"] !== "string") {
+          return "";
+        }
+        return part["text"];
+      })
+      .filter((part) => part !== "")
+      .join("\n");
+  }
+  return "";
+}
+
 export function parsePrompt(value: unknown): PromptParse {
   if (!isRecord(value) || !Array.isArray(value["messages"])) {
     return { ok: false, reason: "messages must be an array" };
@@ -57,13 +81,13 @@ export function parsePrompt(value: unknown): PromptParse {
     }
     const role = roleOf(raw["role"]);
     if (role === null) {
-      return { ok: false, reason: `message ${index} role must be one of system, user, assistant` };
+      return { ok: false, reason: `message ${index} role must be one of ${PROMPT_ROLES.join(", ")}` };
     }
     const content = raw["content"];
-    if (typeof content !== "string") {
-      return { ok: false, reason: `message ${index} content must be a string` };
+    if (typeof content !== "string" && content !== null && content !== undefined && !Array.isArray(content)) {
+      return { ok: false, reason: `message ${index} content must be a string or an array of parts` };
     }
-    messages.push({ role, content });
+    messages.push({ role, content: contentToString(content) });
   }
   return { ok: true, messages, prompt: promptFromMessages(messages) };
 }

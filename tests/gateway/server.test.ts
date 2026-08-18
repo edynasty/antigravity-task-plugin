@@ -252,7 +252,7 @@ describe("POST /v1/chat/completions validation", () => {
   test.each([
     ["missing messages", chatBody({ messages: undefined })],
     ["empty messages", chatBody({ messages: [] })],
-    ["unknown role", chatBody({ messages: [{ role: "tool", content: "x" }] })],
+    ["unknown role", chatBody({ messages: [{ role: "function", content: "x" }] })],
     ["non-string content", chatBody({ messages: [{ role: "user", content: 42 }] })],
     ["non-string model", chatBody({ model: 42 })],
     ["blank model", chatBody({ model: "" })],

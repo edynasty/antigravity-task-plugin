@@ -22,15 +22,79 @@ describe("parsePrompt boundary validation", () => {
   });
 
   test("an unknown role is rejected", () => {
-    expect(parsePrompt({ messages: [{ role: "tool", content: "x" }] })).toEqual({ ok: false, reason: "message 0 role must be one of system, user, assistant" });
+    expect(parsePrompt({ messages: [{ role: "function", content: "x" }] })).toEqual({ ok: false, reason: "message 0 role must be one of system, user, assistant, tool" });
   });
 
-  test("a non-string content is rejected", () => {
-    expect(parsePrompt({ messages: [{ role: "user", content: { text: "x" } }] })).toEqual({ ok: false, reason: "message 0 content must be a string" });
+  test("a non-string non-array content is rejected", () => {
+    expect(parsePrompt({ messages: [{ role: "user", content: { text: "x" } }] })).toEqual({ ok: false, reason: "message 0 content must be a string or an array of parts" });
   });
 
   test("a missing role is rejected", () => {
-    expect(parsePrompt({ messages: [{ content: "x" }] })).toEqual({ ok: false, reason: "message 0 role must be one of system, user, assistant" });
+    expect(parsePrompt({ messages: [{ content: "x" }] })).toEqual({ ok: false, reason: "message 0 role must be one of system, user, assistant, tool" });
+  });
+});
+
+describe("parsePrompt array-of-parts content", () => {
+  test("text parts are extracted and joined", () => {
+    const parsed = parsePrompt({
+      messages: [{ role: "user", content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] }],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.prompt).toBe("<user>\nfirst\nsecond\n</user>");
+    }
+  });
+
+  test("image and unknown parts are dropped, text survives", () => {
+    const parsed = parsePrompt({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+            { type: "text", text: "explain this" },
+            { type: "weird", value: 1 },
+          ],
+        },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.prompt).toBe("<user>\nexplain this\n</user>");
+    }
+  });
+
+  test("an image-only array yields empty content without failing", () => {
+    const parsed = parsePrompt({
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] }],
+    });
+    expect(parsed.ok).toBe(true);
+  });
+
+  test("null and missing content become an empty string", () => {
+    const withNull = parsePrompt({ messages: [{ role: "user", content: null }] });
+    expect(withNull.ok).toBe(true);
+    if (withNull.ok) {
+      expect(withNull.prompt).toBe("<user>\n\n</user>");
+    }
+    const missing = parsePrompt({ messages: [{ role: "tool" }] });
+    expect(missing.ok).toBe(true);
+    if (missing.ok) {
+      expect(missing.prompt).toBe("<tool>\n\n</tool>");
+    }
+  });
+
+  test("tool role is accepted and framed with a tool tag", () => {
+    const parsed = parsePrompt({
+      messages: [
+        { role: "user", content: "run the command" },
+        { role: "tool", content: "exit code 0: ok" },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.prompt).toBe("<user>\nrun the command\n</user>\n\n<tool>\nexit code 0: ok\n</tool>");
+    }
   });
 });
 

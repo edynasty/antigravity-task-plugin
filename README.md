@@ -496,8 +496,11 @@ single role-labeled task prompt passed to agy as `-p`:
 </assistant>
 ```
 
-Unknown roles, non-string content, an empty `messages` array and an empty `model` are rejected
-with 400. `temperature` and unknown fields are ignored. `max_tokens` (positive integer) maps to a
+Unknown roles, non-string non-array content, an empty `messages` array and an empty `model` are
+rejected with 400. Content accepts both a plain string and OpenAI's array-of-parts form: `text`
+parts are joined; `image_url` and other non-text parts are dropped (agy's prompt is plain text,
+so images cannot be passed). The OpenAI `tool` role is accepted and framed as `<tool>`.
+`temperature` and unknown fields are ignored. `max_tokens` (positive integer) maps to a
 hard response cap of ~4 UTF-16 code units per token. Request `mode: "plan"` maps to the agy
 `--mode plan` CLI flag (never injected into the prompt text); the default is `execute`
 (`--mode accept-edits` — agy may modify files and run commands). `timeoutSeconds` maps to
@@ -531,9 +534,9 @@ parses one model per line (first token = id), and caches the result in
 ### Out of scope (documented, not implemented)
 
 Interactive permission flows, model name mapping/aliasing, OpenAI `tool_calls` mapping, multi-user
-auth, and array-of-parts message content. The request `model` is passed verbatim to `--model`;
-agy validates it, and an invalid model surfaces as a 500 with the (credential-redacted) agy
-detail.
+auth, and image content (image parts are dropped, never sent to agy). The request `model` is
+passed verbatim to `--model`; agy validates it, and an invalid model surfaces as a 500 with the
+(credential-redacted) agy detail.
 
 ### Docker deployment
 
