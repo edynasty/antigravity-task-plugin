@@ -117,6 +117,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   const created = Math.floor(Date.now() / 1000);
   const model = chat.model;
   const capChars = chat.maxTokens === null ? null : chat.maxTokens * 4;
+  const streamSteps = ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] !== "0" && ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] !== "false";
   const streamingStarted = { value: false };
   let accumulated = "";
 
@@ -135,13 +136,19 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
         }
         const parser = new NdjsonStreamParser({
           onProgress: (snapshot) => {
-            if (snapshot.event !== "step_update" || snapshot.textDelta === null || signal.aborted) {
+            if (snapshot.event !== "step_update" || signal.aborted) {
               return;
             }
-            const capped = boundedDelta(accumulated, snapshot.textDelta, capChars);
-            accumulated = capped.accumulated;
-            if (chat.stream && capped.emitted !== "") {
-              res.write(chatChunk(id, created, model, { content: capped.emitted }, null));
+            if (snapshot.textDelta !== null) {
+              const capped = boundedDelta(accumulated, snapshot.textDelta, capChars);
+              accumulated = capped.accumulated;
+              if (chat.stream && capped.emitted !== "") {
+                res.write(chatChunk(id, created, model, { content: capped.emitted }, null));
+              }
+              return;
+            }
+            if (chat.stream && streamSteps && snapshot.stepType === "tool" && snapshot.toolName !== null) {
+              res.write(chatChunk(id, created, model, { content: `\n[agy: ${snapshot.toolName}]\n` }, null));
             }
           },
         });

@@ -29,8 +29,14 @@ export function chatDone(): string {
   return "data: [DONE]\n\n";
 }
 
+/**
+ * Carries the agy conversation id as an SSE COMMENT line (`:` prefix), which
+ * eventsource-parser implementations skip by default — strict OpenAI
+ * chat.completion.chunk clients (e.g. the AI SDK) reject unknown `data:` JSON
+ * shapes, so the id must never ride in a data line.
+ */
 export function conversationIdSse(conversationId: string): string {
-  return sseData({ conversation_id: conversationId });
+  return `: conversation_id=${conversationId}\n\n`;
 }
 
 export interface DeltaCap {

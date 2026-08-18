@@ -14,7 +14,9 @@ import {
   GW_CONVERSATION_ID,
   GW_RESULT_USAGE,
   chatBody,
+  gwInitLine,
   gwResultLine,
+  gwStepLine,
   gwStream,
   jsonRequest,
   startGateway,
@@ -24,8 +26,11 @@ import {
 const handles: GatewayServerHandle[] = [];
 const tempDirs: string[] = [];
 
-async function spawn(overrides: Partial<Parameters<typeof startGateway>[0]> = {}): Promise<GatewayServerHandle> {
-  const handle = await startGateway(overrides);
+async function spawn(
+  overrides: Partial<Parameters<typeof startGateway>[0]> = {},
+  envOverrides: Readonly<Record<string, string>> = {},
+): Promise<GatewayServerHandle> {
+  const handle = await startGateway(overrides, envOverrides);
   handles.push(handle);
   return handle;
 }
@@ -172,7 +177,7 @@ describe("POST /v1/chat/completions non-stream", () => {
 });
 
 describe("POST /v1/chat/completions streaming", () => {
-  test("stream=true emits SSE chunks, a stop chunk, conversation line and [DONE]", async () => {
+  test("stream=true emits SSE chunks, a stop chunk, conversation comment and [DONE]", async () => {
     const { baseUrl, fake } = await spawn();
     fake.setStdout(gwStream(["delta one. ", "delta two. "], "ignored for stream"));
     const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: true })));
@@ -185,7 +190,7 @@ describe("POST /v1/chat/completions streaming", () => {
       .filter((line) => line.startsWith("data: "))
       .map((line) => line.slice(6));
     const chunks = dataLines
-      .filter((line) => line !== "[DONE]" && !line.includes("conversation_id"))
+      .filter((line) => line !== "[DONE]")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
 
     const contentChunks = chunks.map(
@@ -196,8 +201,14 @@ describe("POST /v1/chat/completions streaming", () => {
     const terminal = chunks[chunks.length - 1] as Record<string, unknown>;
     expect((terminal["choices"] as Array<Record<string, unknown>>)[0]?.["finish_reason"]).toBe("stop");
 
-    const conversationLine = dataLines.find((line) => line.includes("conversation_id"));
-    expect(conversationLine).toBe(JSON.stringify({ conversation_id: GW_CONVERSATION_ID }));
+    // Every data line must be a standard chunk or [DONE]: strict OpenAI clients
+    // (AI SDK) reject non-standard payloads like a bare conversation_id object.
+    for (const chunk of chunks) {
+      expect(chunk["choices"]).toBeDefined();
+    }
+
+    expect(text).toContain(`: conversation_id=${GW_CONVERSATION_ID}`);
+    expect(text).not.toContain('"conversation_id"');
     expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
   });
 
@@ -207,6 +218,44 @@ describe("POST /v1/chat/completions streaming", () => {
     const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({})));
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     await response.text();
+  });
+
+  test("tool steps stream as visible activity deltas", async () => {
+    const { baseUrl, fake } = await spawn();
+    const toolLine = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        conversation_id: GW_CONVERSATION_ID,
+        step_index: 1,
+        state: "DONE",
+        step_type: "tool",
+        tool_name: "run_command",
+      },
+    });
+    fake.setStdout([gwInitLine(), toolLine, gwStepLine("result text. "), gwResultLine("SUCCESS", "ignored")].join("\n") + "\n");
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: true })));
+    const text = await response.text();
+    expect(text).toContain('[agy: run_command]');
+    expect(text).toContain("result text. ");
+  });
+
+  test("tool step activity is disabled by AGY_GATEWAY_STREAM_STEPS=0", async () => {
+    const { baseUrl, fake } = await spawn({}, { AGY_GATEWAY_STREAM_STEPS: "0" });
+    const toolLine = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        conversation_id: GW_CONVERSATION_ID,
+        step_index: 1,
+        state: "DONE",
+        step_type: "tool",
+        tool_name: "run_command",
+      },
+    });
+    fake.setStdout([gwInitLine(), toolLine, gwStepLine("result text. "), gwResultLine("SUCCESS", "ignored")].join("\n") + "\n");
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: true })));
+    const text = await response.text();
+    expect(text).not.toContain("[agy:");
+    expect(text).toContain("result text. ");
   });
 
   test("text deltas containing JSON-special characters are escaped", async () => {

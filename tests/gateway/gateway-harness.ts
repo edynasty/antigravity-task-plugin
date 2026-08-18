@@ -107,7 +107,7 @@ export interface FakeGatewayDeps {
   release(): void;
 }
 
-export function makeGatewayDeps(): FakeGatewayDeps {
+export function makeGatewayDeps(envOverrides: Readonly<Record<string, string>> = {}): FakeGatewayDeps {
   const runCalls: SpawnOptions[] = [];
   let resolveCalls = 0;
   let maxActive = 0;
@@ -118,7 +118,7 @@ export function makeGatewayDeps(): FakeGatewayDeps {
   const blockers: Array<() => void> = [];
 
   const deps: GatewayDeps = {
-    env: { PATH: "/usr/bin", AGY_PATH: "/fake" },
+    env: { PATH: "/usr/bin", AGY_PATH: "/fake", ...envOverrides },
     platform: "darwin",
     cwd: "/work",
     resolveAgy: () => {
@@ -194,8 +194,11 @@ export interface GatewayServerHandle {
   close(): Promise<void>;
 }
 
-export async function startGateway(overrides: Partial<GatewayConfig> = {}): Promise<GatewayServerHandle> {
-  const fake = makeGatewayDeps();
+export async function startGateway(
+  overrides: Partial<GatewayConfig> = {},
+  envOverrides: Readonly<Record<string, string>> = {},
+): Promise<GatewayServerHandle> {
+  const fake = makeGatewayDeps(envOverrides);
   const config: GatewayConfig = {
     host: "127.0.0.1",
     port: 0,

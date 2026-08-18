@@ -44,8 +44,8 @@ describe("terminal SSE lines", () => {
     expect(chatDone()).toBe("data: [DONE]\n\n");
   });
 
-  test("conversation id line carries the id as a data payload", () => {
-    expect(conversationIdSse("conv-1")).toBe('data: {"conversation_id":"conv-1"}\n\n');
+  test("conversation id is an SSE comment line, never a data line", () => {
+    expect(conversationIdSse("conv-1")).toBe(": conversation_id=conv-1\n\n");
   });
 });
 
