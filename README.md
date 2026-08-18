@@ -409,6 +409,97 @@ CI runs deterministic gates only: unit tests, typecheck, build, integration harn
 
 The live smoke is opt-in for local development and manual verification only.
 
+## OpenAI-compatible gateway (agy-gateway)
+
+The package ships an optional standalone HTTP gateway (`agy-gateway` bin) that exposes an
+OpenAI-compatible surface — `POST /v1/chat/completions` and `GET /v1/models` — over the local
+agy CLI. Tools such as omo/OpenCode can then select agy's models as if they were a normal LLM
+provider, including live streaming text.
+
+**Execution constraint: the gateway NEVER contacts any API directly. There are zero network
+calls to Google/Gemini/Antigravity endpoints. The only execution path is spawning the local
+agy CLI binary as a subprocess and talking to it over its stdio NDJSON protocol.** Direct API
+access is known to cause account bans; the archived agy-tools-rust repository is the
+counterexample that motivated this design.
+
+### Run
+
+```bash
+npm run build
+AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
+```
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `AGY_GATEWAY_HOST` / `AGY_GATEWAY_PORT` | `127.0.0.1` / `8787` | Bind address |
+| `AGY_GATEWAY_TOKEN` | (none) | When set, require `Authorization: Bearer <token>` (401 otherwise) |
+| `AGY_GATEWAY_MAX_QUEUE` | `8` | Max requests waiting in the serial FIFO queue; overflow → 429 `queue full` |
+| `AGY_GATEWAY_TIMEOUT_S` | `300` | Default `--print-timeout` seconds; the host watchdog adds a 5s grace |
+| `AGY_GATEWAY_MODELS_TTL_S` | `3600` | `agy models` cache TTL |
+| `AGY_GATEWAY_CACHE_DIR` | `~/.agy-gateway` | Model cache directory |
+| `AGY_GATEWAY_CWD` | process cwd | agy's working directory (agent-mode runs operate relative to it) |
+
+**Serial queue**: at most ONE agy task runs at a time (ban avoidance). Concurrent requests wait
+FIFO; a client disconnect removes its queued job.
+
+### Request → prompt framing
+
+OpenAI `messages` (roles `system` / `user` / `assistant`, string content) are converted into a
+single role-labeled task prompt passed to agy as `-p`:
+
+```text
+<system>
+<system content verbatim>
+</system>
+
+<user>
+<user content verbatim>
+</user>
+
+<assistant>
+<assistant content verbatim>
+</assistant>
+```
+
+Unknown roles, non-string content, an empty `messages` array and an empty `model` are rejected
+with 400. `temperature` and unknown fields are ignored. `max_tokens` (positive integer) maps to a
+hard response cap of ~4 UTF-16 code units per token. Request `mode: "plan"` maps to the agy
+`--mode plan` CLI flag (never injected into the prompt text); the default is `execute`
+(`--mode accept-edits` — agy may modify files and run commands). `timeoutSeconds` maps to
+`--print-timeout <n>s` plus a host watchdog; expiry → 504.
+
+### Responses
+
+`stream=true` (default): SSE chunks shaped as OpenAI `chat.completion.chunk` objects, one per
+agy `step_update.text_delta`, then a `finish_reason:"stop"` chunk, an optional
+`data: {"conversation_id":"..."}` line, and `data: [DONE]`. Streaming headers are written when
+the agy run starts, so pre-run failures (auth, validation, queue full, upstream 500) come back
+as normal JSON errors.
+
+`stream=false`: a full `chat.completion` object with `usage` (from the agy result) and
+`conversation_id`.
+
+### Conversation continuation
+
+Pass the non-standard body field `conversationId` or the `x-agy-conversation` header to resume a
+conversation (`--conversation <id>`). The resulting id is surfaced via the trailing SSE
+`conversation_id` line (stream) or the `conversation_id` field (non-stream).
+
+### Models
+
+`GET /v1/models` spawns the local `agy models` subprocess (a subprocess, not a network call),
+parses one model per line (first token = id), and caches the result in
+`AGY_GATEWAY_CACHE_DIR/models.json`. Fallback chain: fresh cache → stale cache → builtin defaults
+(`gemini-3.7-flash-high`, `gemini-3.5-flash-medium`, `claude-sonnet-4-6`, `claude-opus-4-6`,
+`gpt-oss-120b`).
+
+### Out of scope (documented, not implemented)
+
+Interactive permission flows, model name mapping/aliasing, OpenAI `tool_calls` mapping, multi-user
+auth, and array-of-parts message content. The request `model` is passed verbatim to `--model`;
+agy validates it, and an invalid model surfaces as a 500 with the (credential-redacted) agy
+detail.
+
 ## Official documentation
 
 - [Antigravity agy headless CLI](https://antigravity.google/docs/cli/headless)

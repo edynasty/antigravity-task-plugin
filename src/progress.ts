@@ -60,6 +60,7 @@ export function stepUpdateProgress(event: Readonly<Record<string, unknown>>): Pr
       toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     };
   }
   return {
@@ -71,5 +72,6 @@ export function stepUpdateProgress(event: Readonly<Record<string, unknown>>): Pr
     toolName: nullableString(payload["tool_name"]),
     elapsedSeconds: nullableSeconds(payload["duration_seconds"]),
     totalTokens: totalTokensOf(payload["usage"]),
+    textDelta: nullableString(payload["text_delta"]),
   };
 }

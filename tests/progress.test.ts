@@ -63,6 +63,7 @@ describe("NdjsonStreamParser onProgress observer", () => {
         toolName: null,
         elapsedSeconds: null,
         totalTokens: STEP_USAGE.total_tokens,
+        textDelta: null,
       },
     ]);
   });
@@ -84,8 +85,18 @@ describe("NdjsonStreamParser onProgress observer", () => {
         toolName: null,
         elapsedSeconds: null,
         totalTokens: null,
+        textDelta: "responding...",
       },
     ]);
+  });
+
+  test("step_update text_delta maps additively to textDelta; non-string stays null", () => {
+    const { snapshots: present } = collect(`${stepEvent({ stepIndex: 0, state: "DONE", textDelta: "delta text. " })}\n`);
+    expect(present[0]).toMatchObject({ event: "step_update", textDelta: "delta text. " });
+
+    const nonString = `${line({ event: "step_update", step_update: { text_delta: { nested: true } } })}\n`;
+    const { snapshots: absent } = collect(nonString);
+    expect(absent[0]).toMatchObject({ event: "step_update", textDelta: null });
   });
 
   test("init snapshot carries model, agent and permission_mode primitives", () => {
@@ -139,6 +150,7 @@ describe("NdjsonStreamParser onProgress observer", () => {
         toolName: "run_command",
         elapsedSeconds: null,
         totalTokens: null,
+        textDelta: null,
       },
     ]);
   });

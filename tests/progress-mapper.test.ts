@@ -32,6 +32,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: 1.5,
       totalTokens: 7,
+      textDelta: null,
     });
     expect(mapped.title).toBe("antigravity-task: step 3 run_command");
     expect(mapped.metadata).toEqual({
@@ -55,6 +56,7 @@ describe("progressToMetadata mapper", () => {
       toolName: "run_command",
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(mapped.title).toBe("antigravity-task: running tool run_command");
     expect(mapped.metadata).toEqual({
@@ -77,6 +79,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(mapped.title).toBe("antigravity-task: step 2 tool");
     expect(mapped.metadata).toEqual({ phase: "step 2 tool", stepIndex: 2, state: "ACTIVE", stepType: "tool" });
@@ -92,6 +95,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(mapped.title).toBe("antigravity-task: responding");
     expect(mapped.metadata).toEqual({ phase: "responding" });
@@ -112,6 +116,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(mapped.title).toBe("antigravity-task: step 0 [REDACTED]");
     expect(mapped.metadata["stepType"]).toBe("[REDACTED]");
@@ -134,6 +139,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(String(step.metadata["conversationId"])).toHaveLength(200);
 
@@ -162,6 +168,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: 0.5,
       totalTokens: 7,
+      textDelta: null,
     });
     expect(mapped.title).toBe("antigravity-task: step 1 run_command");
     expect(mapped.metadata["state"]).toBe("ACTIVE");
@@ -178,6 +185,7 @@ describe("progressToMetadata mapper", () => {
       toolName: null,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(mapped.metadata["state"]).toHaveLength(200);
     expect(mapped.metadata["stepType"]).toHaveLength(200);
@@ -236,6 +244,7 @@ describe("progressToMetadata mapper", () => {
       toolName: "y".repeat(60_000),
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(String(toolStep.metadata["toolName"])).toHaveLength(200);
     expect(toolStep.title).toBe("antigravity-task: running tool " + "y".repeat(200));
@@ -252,6 +261,7 @@ describe("progressToMetadata mapper", () => {
       toolName: secretTool,
       elapsedSeconds: null,
       totalTokens: null,
+      textDelta: null,
     });
     expect(mapped.metadata["toolName"]).toBe("[REDACTED]");
     expect(mapped.title).not.toContain(secretTool);
@@ -271,7 +281,7 @@ describe("createProgressDispatcher throttling", () => {
     expect(calls[0]?.title).toBe("antigravity-task: starting");
 
     for (let index = 0; index < 20; index += 1) {
-      dispatcher.dispatch({ event: "step_update", conversationId: null, stepIndex: index, state: "ACTIVE", stepType: null, toolName: null, elapsedSeconds: null, totalTokens: null });
+      dispatcher.dispatch({ event: "step_update", conversationId: null, stepIndex: index, state: "ACTIVE", stepType: null, toolName: null, elapsedSeconds: null, totalTokens: null, textDelta: null });
     }
     expect(calls.length).toBe(1);
 

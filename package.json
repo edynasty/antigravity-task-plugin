@@ -24,6 +24,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "agy-gateway": "dist/gateway/cli.js"
+  },
   "files": [
     "dist",
     "README.md",

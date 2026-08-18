@@ -166,6 +166,8 @@ export type ProgressSnapshot =
       readonly toolName: string | null;
       readonly elapsedSeconds: number | null;
       readonly totalTokens: number | null;
+      /** Streaming text fragment (step_update.text_delta); consumed by the gateway SSE bridge. */
+      readonly textDelta: string | null;
     };
 
 /** Final text accumulation cap (chars). */
