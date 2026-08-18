@@ -123,7 +123,7 @@ describe("antigravity-task tool live progress", () => {
         step_update: {
           conversation_id: "conv-safe",
           step_index: 0,
-          state: "api_key=AKIAIOSFODNN7EXAMPLE",
+          state: "api_key=AKIA-TEST-EXAMPLE",
           step_type: "sk-ant-1234567890abcdef1234567890abcdef",
         },
       }),
@@ -134,7 +134,7 @@ describe("antigravity-task tool live progress", () => {
 
     const serialized = JSON.stringify(updates.map((update) => ({ title: update.title, metadata: update.metadata })));
     expect(serialized).not.toContain("sk-ant-1234567890abcdef1234567890abcdef");
-    expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(serialized).not.toContain("AKIA-TEST-EXAMPLE");
     expect(serialized).toContain("[REDACTED]");
   });
 

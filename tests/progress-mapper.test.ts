@@ -107,7 +107,7 @@ describe("progressToMetadata mapper", () => {
       event: "step_update",
       conversationId: null,
       stepIndex: 0,
-      state: "api_key=AKIAIOSFODNN7EXAMPLE",
+      state: "api_key=AKIA-TEST-EXAMPLE",
       stepType: "sk-ant-1234567890abcdef1234567890abcdef",
       toolName: null,
       elapsedSeconds: null,
@@ -117,7 +117,7 @@ describe("progressToMetadata mapper", () => {
     expect(mapped.metadata["stepType"]).toBe("[REDACTED]");
     expect(mapped.metadata["state"]).toBe("[REDACTED]");
     expect(mapped.title).not.toContain("sk-ant-1234567890abcdef1234567890abcdef");
-    expect(mapped.title).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(mapped.title).not.toContain("AKIA-TEST-EXAMPLE");
   });
 
   test("conversationId is bounded to 200 chars in init, step_update and terminal metadata", () => {
