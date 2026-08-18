@@ -413,4 +413,20 @@ describe("gateway routing", () => {
     const body = (await response.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
   });
+
+  test("GET /v1 answers 200 for SDK baseURL probes", async () => {
+    const { baseUrl } = await spawn();
+    const response = await fetch(baseUrl + "/v1");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { status: string };
+    expect(body.status).toBe("ok");
+  });
+
+  test("GET / answers 200 for health probes", async () => {
+    const { baseUrl } = await spawn();
+    const response = await fetch(baseUrl + "/");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { status: string };
+    expect(body.status).toBe("ok");
+  });
 });

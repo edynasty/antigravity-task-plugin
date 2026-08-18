@@ -124,6 +124,12 @@ export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): S
       case "GET /v1/models":
         modelsRoute(res, deps, config);
         return;
+      case "GET /v1":
+      case "GET /":
+        // OpenAI-compatible SDKs sometimes probe the bare baseURL (GET /v1)
+        // or the root before first use; answer 200 so the provider passes.
+        sendJson(res, 200, { status: "ok" });
+        return;
       default: {
         meta.status = 404;
         sendJsonError(
