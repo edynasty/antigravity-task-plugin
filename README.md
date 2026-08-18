@@ -442,6 +442,41 @@ AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
 **Serial queue**: at most ONE agy task runs at a time (ban avoidance). Concurrent requests wait
 FIFO; a client disconnect removes its queued job.
 
+### Configure omo / OpenCode
+
+Start the gateway first, then add it as an OpenAI-compatible provider. With the gateway running
+on the default address, this config is copy-paste ready:
+
+```jsonc
+// opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "agy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Antigravity (agy CLI gateway)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8787/v1",
+        "apiKey": "dummy"
+      },
+      "models": {
+        "gemini-3.7-flash-high": { "name": "Gemini 3.7 Flash (High)" },
+        "gemini-3.5-flash-medium": { "name": "Gemini 3.5 Flash (Medium)" },
+        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6 (Thinking)" },
+        "claude-opus-4-6": { "name": "Claude Opus 4.6 (Thinking)" },
+        "gpt-oss-120b": { "name": "GPT-OSS-120b" }
+      }
+    }
+  }
+}
+```
+
+The model list above is the builtin fallback; run `curl http://127.0.0.1:8787/v1/models` against a
+live gateway for the full list from your agy installation and add any entries you want to select.
+The `apiKey` is ignored unless `AGY_GATEWAY_TOKEN` is set — when it is, use that token here. If
+your OpenCode is configured with an `auth` requirement for the provider, prefer the token-based
+setup above. Restart OpenCode after editing the config.
+
 ### Request → prompt framing
 
 OpenAI `messages` (roles `system` / `user` / `assistant`, string content) are converted into a

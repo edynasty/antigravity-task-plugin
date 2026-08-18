@@ -16,7 +16,7 @@ import type { AntigravityTaskArgs, ProgressUpdate, RunnerDeps, ToolPayload } fro
 
 export const PACKAGE_IDENTITY = {
   name: "antigravity-task-plugin",
-  version: "0.0.3",
+  version: "0.0.4",
 } as const;
 
 export type PackageIdentity = typeof PACKAGE_IDENTITY;
