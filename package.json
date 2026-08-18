@@ -1,6 +1,6 @@
 {
   "name": "antigravity-task-plugin",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "OpenCode plugin that delegates standalone tasks to the official Antigravity agy CLI and returns the final text, session id, status and token usage",
   "type": "module",
   "license": "MIT",
