@@ -13,8 +13,8 @@ export const BUILTIN_MODELS: readonly string[] = [
   "gemini-3.7-flash-high",
   "gemini-3.5-flash-medium",
   "claude-sonnet-4-6",
-  "claude-opus-4-6",
-  "gpt-oss-120b",
+  "claude-opus-4-6-thinking",
+  "gpt-oss-120b-medium",
 ];
 
 /** Host watchdog for the `agy models` subprocess (ms). */

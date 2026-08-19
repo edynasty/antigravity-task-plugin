@@ -464,8 +464,8 @@ on the default address, this config is copy-paste ready:
         "gemini-3.7-flash-high": { "name": "Gemini 3.7 Flash (High)" },
         "gemini-3.5-flash-medium": { "name": "Gemini 3.5 Flash (Medium)" },
         "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6 (Thinking)" },
-        "claude-opus-4-6": { "name": "Claude Opus 4.6 (Thinking)" },
-        "gpt-oss-120b": { "name": "GPT-OSS-120b" }
+        "claude-opus-4-6-thinking": { "name": "Claude Opus 4.6 (Thinking)" },
+        "gpt-oss-120b-medium": { "name": "GPT-OSS 120B (Medium)" }
       }
     }
   }
@@ -547,8 +547,8 @@ conversation (`--conversation <id>`). The resulting id is surfaced via the SSE c
 `GET /v1/models` spawns the local `agy models` subprocess (a subprocess, not a network call),
 parses one model per line (first token = slug), and caches the result in
 `AGY_GATEWAY_CACHE_DIR/models.json`. Fallback chain: fresh cache → stale cache → builtin defaults
-(`gemini-3.7-flash-high`, `gemini-3.5-flash-medium`, `claude-sonnet-4-6`, `claude-opus-4-6`,
-`gpt-oss-120b`).
+(`gemini-3.7-flash-high`, `gemini-3.5-flash-medium`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`,
+`gpt-oss-120b-medium`).
 
 ### Out of scope (documented, not implemented)
 
