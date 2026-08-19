@@ -4,7 +4,9 @@
  * CLI. The framing is the documented contract of the gateway.
  */
 import { describe, expect, test } from "bun:test";
-import { parsePrompt, promptFromMessages } from "../../src/gateway/prompt";
+import { HOST_EXECUTION_DIRECTIVE, parsePrompt, promptFromMessages } from "../../src/gateway/prompt";
+
+const DIRECTIVE = `${HOST_EXECUTION_DIRECTIVE}\n\n`;
 
 describe("parsePrompt boundary validation", () => {
   test("non-record input is rejected", () => {
@@ -51,7 +53,7 @@ describe("parsePrompt tools injection", () => {
     if (!parsed.ok) {
       return;
     }
-    expect(parsed.prompt).toBe("<tools>\n- bash: Run a shell command\n- edit: Edit a file\n</tools>\n\n<user>\nhello\n</user>");
+    expect(parsed.prompt).toBe(`${DIRECTIVE}<tools>\n- bash: Run a shell command\n- edit: Edit a file\n</tools>\n\n<user>\nhello\n</user>`);
   });
 
   test("malformed tools entries are skipped and an empty tools array adds nothing", () => {
@@ -67,7 +69,7 @@ describe("parsePrompt tools injection", () => {
     if (!parsed.ok) {
       return;
     }
-    expect(parsed.prompt).toBe("<user>\nhi\n</user>");
+    expect(parsed.prompt).toBe(`${DIRECTIVE}<user>\nhi\n</user>`);
   });
 });
 
@@ -78,7 +80,7 @@ describe("parsePrompt array-of-parts content", () => {
     });
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
-      expect(parsed.prompt).toBe("<user>\nfirst\nsecond\n</user>");
+      expect(parsed.prompt).toBe(`${DIRECTIVE}<user>\nfirst\nsecond\n</user>`);
     }
   });
 
@@ -97,7 +99,7 @@ describe("parsePrompt array-of-parts content", () => {
     });
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
-      expect(parsed.prompt).toBe("<user>\nexplain this\n</user>");
+      expect(parsed.prompt).toBe(`${DIRECTIVE}<user>\nexplain this\n</user>`);
     }
   });
 
@@ -112,12 +114,12 @@ describe("parsePrompt array-of-parts content", () => {
     const withNull = parsePrompt({ messages: [{ role: "user", content: null }] });
     expect(withNull.ok).toBe(true);
     if (withNull.ok) {
-      expect(withNull.prompt).toBe("<user>\n\n</user>");
+      expect(withNull.prompt).toBe(`${DIRECTIVE}<user>\n\n</user>`);
     }
     const missing = parsePrompt({ messages: [{ role: "tool" }] });
     expect(missing.ok).toBe(true);
     if (missing.ok) {
-      expect(missing.prompt).toBe("<tool>\n\n</tool>");
+      expect(missing.prompt).toBe(`${DIRECTIVE}<tool>\n\n</tool>`);
     }
   });
 
@@ -130,7 +132,7 @@ describe("parsePrompt array-of-parts content", () => {
     });
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
-      expect(parsed.prompt).toBe("<user>\nrun the command\n</user>\n\n<tool>\nexit code 0: ok\n</tool>");
+      expect(parsed.prompt).toBe(`${DIRECTIVE}<user>\nrun the command\n</user>\n\n<tool>\nexit code 0: ok\n</tool>`);
     }
   });
 });

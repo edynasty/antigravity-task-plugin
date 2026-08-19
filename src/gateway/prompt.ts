@@ -90,9 +90,19 @@ export function parsePrompt(value: unknown): PromptParse {
     messages.push({ role, content: contentToString(content) });
   }
   const toolsPrompt = toolsToPrompt(value["tools"]);
-  const prompt = `${toolsPrompt === "" ? "" : `${toolsPrompt}\n\n`}${promptFromMessages(messages)}`;
+  const prompt = `${HOST_EXECUTION_DIRECTIVE}\n\n${toolsPrompt === "" ? "" : `${toolsPrompt}\n\n`}${promptFromMessages(messages)}`;
   return { ok: true, messages, prompt };
 }
+
+/** Tells agy to stay a pure reasoner: it runs inside a container with no
+ * filesystem access, so any tool it tries to execute (run_command etc.) fails
+ * against the user's project. The host (OpenCode) executes tools and feeds the
+ * results back as <tool> blocks in later turns. */
+export const HOST_EXECUTION_DIRECTIVE =
+  "You are running in an isolated sandbox without access to the user's files, commands or network.\n" +
+  "Do NOT use any tools, read files, or run commands yourself - they will fail or touch the wrong environment.\n" +
+  "The host executes tools on your behalf and includes their results in later messages as <tool> blocks.\n" +
+  "If you need file contents or command output, describe what the host should run; do not attempt it yourself.";
 
 function toolsToPrompt(tools: unknown): string {
   if (!Array.isArray(tools)) {
