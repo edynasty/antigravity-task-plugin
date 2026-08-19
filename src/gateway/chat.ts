@@ -35,6 +35,8 @@ export type { ChatRequest, ChatRequestParse } from "./chat-request.js";
 export interface RequestMeta {
   status: number;
   model: string | null;
+  errorMessage: string | null;
+  promptBytes: number | null;
 }
 
 export interface ChatContext {
@@ -60,6 +62,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   } catch (error) {
     if (error instanceof GatewayHttpError) {
       ctx.meta.status = error.status;
+      ctx.meta.errorMessage = error.message;
       sendJsonError(res, error);
       return;
     }
@@ -69,11 +72,13 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   const parsed = parseChatRequest(bodyText);
   if (!parsed.ok) {
     ctx.meta.status = parsed.error.status;
+    ctx.meta.errorMessage = parsed.error.message;
     sendJsonError(res, parsed.error);
     return;
   }
   const chat = parsed.value;
   ctx.meta.model = chat.model;
+  ctx.meta.promptBytes = chat.prompt.length;
 
   const headerConversation = req.headers["x-agy-conversation"];
   const conversationId =
@@ -95,6 +100,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
     if (error instanceof ArgsError) {
       const httpError = invalidRequest(error.message);
       ctx.meta.status = httpError.status;
+      ctx.meta.errorMessage = httpError.message;
       sendJsonError(res, httpError);
       return;
     }
@@ -108,6 +114,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
     if (error instanceof ResolveError) {
       const httpError = new GatewayHttpError(500, "upstream_error", "server_error", boundDiagnosticText(error.message, ctx.deps.cwd));
       ctx.meta.status = httpError.status;
+      ctx.meta.errorMessage = httpError.message;
       sendJsonError(res, httpError);
       return;
     }
@@ -258,6 +265,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
       return;
     }
     ctx.meta.status = httpError.status;
+    ctx.meta.errorMessage = httpError.message;
     if (streamingStarted.value) {
       if (!res.writableEnded) {
         res.write(sseErrorData(httpError));

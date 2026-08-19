@@ -100,13 +100,21 @@ function modelsRoute(res: ServerResponse, deps: GatewayDeps, config: GatewayConf
 export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): Server {
   const queue = new SerialQueue(config.maxQueue);
   return createServer((req, res) => {
-    const meta: RequestMeta = { status: 200, model: null };
+    const meta: RequestMeta = { status: 200, model: null, errorMessage: null, promptBytes: null };
     const pathname = pathOf(req);
     const started = Date.now();
     res.on("finish", () => {
-      console.log(
-        `[agy-gateway] ${req.method ?? "?"} ${pathname} ${meta.status} ${Date.now() - started}ms${meta.model !== null ? ` model=${meta.model}` : ""}`,
-      );
+      const parts = [`[agy-gateway] ${req.method ?? "?"} ${pathname} ${meta.status} ${Date.now() - started}ms`];
+      if (meta.model !== null) {
+        parts.push(`model=${meta.model}`);
+      }
+      if (meta.promptBytes !== null) {
+        parts.push(`promptBytes=${meta.promptBytes}`);
+      }
+      if (meta.errorMessage !== null) {
+        parts.push(`error=${meta.errorMessage}`);
+      }
+      console.log(parts.join(" "));
     });
     if (pathname === "/v1" || pathname === "/") {
       if (req.method === "GET") {
@@ -124,6 +132,7 @@ export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): S
       task.catch((error: unknown) => {
         const httpError = unexpectedError(error, deps.cwd);
         meta.status = httpError.status;
+        meta.errorMessage = httpError.message;
         if (!res.writableEnded) {
           try {
             sendJsonError(res, httpError);
