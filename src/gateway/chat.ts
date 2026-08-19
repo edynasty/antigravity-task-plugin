@@ -41,6 +41,7 @@ export interface ChatContext {
   readonly deps: GatewayDeps;
   readonly queue: SerialQueue;
   readonly defaultTimeoutSeconds: number;
+  readonly maxBodyBytes: number;
   readonly log: (line: string) => void;
   readonly meta: RequestMeta;
 }
@@ -55,7 +56,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
 
   let bodyText: string;
   try {
-    bodyText = await readRequestBody(req);
+    bodyText = await readRequestBody(req, ctx.maxBodyBytes);
   } catch (error) {
     if (error instanceof GatewayHttpError) {
       ctx.meta.status = error.status;

@@ -435,6 +435,7 @@ AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
 | `AGY_GATEWAY_TOKEN` | (none) | When set, require `Authorization: Bearer <token>` (401 otherwise) |
 | `AGY_GATEWAY_MAX_QUEUE` | `8` | Max requests waiting in the serial FIFO queue; overflow → 429 `queue full` |
 | `AGY_GATEWAY_TIMEOUT_S` | `300` | Default `--print-timeout` seconds; the host watchdog adds a 5s grace |
+| `AGY_GATEWAY_MAX_BODY_BYTES` | `10000000` | Max request body bytes (OpenCode sends the whole conversation; raise for very long sessions) |
 | `AGY_GATEWAY_MODELS_TTL_S` | `3600` | `agy models` cache TTL |
 | `AGY_GATEWAY_CACHE_DIR` | `~/.agy-gateway` | Model cache directory |
 | `AGY_GATEWAY_CWD` | process cwd | agy's working directory (agent-mode runs operate relative to it) |

@@ -8,7 +8,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { GatewayHttpError } from "./errors.js";
 
-export const MAX_REQUEST_BODY_BYTES = 1_000_000;
+export const MAX_REQUEST_BODY_BYTES = 10_000_000;
 
 export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   if (res.writableEnded || res.destroyed) {

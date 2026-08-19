@@ -29,6 +29,7 @@ export interface GatewayConfig {
   readonly defaultTimeoutSeconds: number;
   readonly modelsTtlSeconds: number;
   readonly cacheDir: string;
+  readonly maxBodyBytes: number;
 }
 
 function parsePort(value: string | undefined, fallback: number): number {
@@ -64,6 +65,7 @@ export function gatewayConfigFromEnv(env: Readonly<Record<string, string | undef
     defaultTimeoutSeconds: parsePositiveInt(env["AGY_GATEWAY_TIMEOUT_S"], 300),
     modelsTtlSeconds: parsePositiveInt(env["AGY_GATEWAY_MODELS_TTL_S"], 3600),
     cacheDir: env["AGY_GATEWAY_CACHE_DIR"] ?? join(homedir(), ".agy-gateway"),
+    maxBodyBytes: parsePositiveInt(env["AGY_GATEWAY_MAX_BODY_BYTES"], 10_000_000),
   };
 }
 
@@ -133,7 +135,7 @@ export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): S
     };
     switch (route) {
       case "POST /v1/chat/completions":
-        guard(handleChat(req, res, { deps, queue, defaultTimeoutSeconds: config.defaultTimeoutSeconds, log: console.log, meta }));
+        guard(handleChat(req, res, { deps, queue, defaultTimeoutSeconds: config.defaultTimeoutSeconds, maxBodyBytes: config.maxBodyBytes, log: console.log, meta }));
         return;
       case "GET /v1/models":
         modelsRoute(res, deps, config);

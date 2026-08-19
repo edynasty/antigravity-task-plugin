@@ -579,4 +579,23 @@ describe("gatewayConfigFromEnv", () => {
     expect(gatewayConfigFromEnv({ AGY_GATEWAY_TOKEN: "   " }).token).toBeNull();
     expect(gatewayConfigFromEnv({ AGY_GATEWAY_TOKEN: "my-token" }).token).toBe("my-token");
   });
+
+  test("maxBodyBytes defaults to 10 MiB and is overridable", () => {
+    expect(gatewayConfigFromEnv({}).maxBodyBytes).toBe(10_000_000);
+    expect(gatewayConfigFromEnv({ AGY_GATEWAY_MAX_BODY_BYTES: "500000" }).maxBodyBytes).toBe(500_000);
+    expect(gatewayConfigFromEnv({ AGY_GATEWAY_MAX_BODY_BYTES: "nope" }).maxBodyBytes).toBe(10_000_000);
+  });
+
+  test("a request body over the configured limit is a 400 invalid_request", async () => {
+    const { baseUrl, fake } = await spawn({ maxBodyBytes: 100 });
+    fake.setStdout(gwStream(["d"], "ok"));
+    const response = await fetch(baseUrl + "/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "x", messages: [{ role: "user", content: "y".repeat(200) }] }),
+    });
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("request body exceeds");
+  });
 });

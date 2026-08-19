@@ -216,6 +216,7 @@ export async function startGateway(
     defaultTimeoutSeconds: 300,
     modelsTtlSeconds: 3600,
     cacheDir: "/tmp/agy-gateway-test",
+    maxBodyBytes: 10_000_000,
     ...overrides,
   };
   const server = createGatewayServer(fake.deps, config);
