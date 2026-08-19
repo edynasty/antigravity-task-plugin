@@ -34,6 +34,43 @@ describe("parsePrompt boundary validation", () => {
   });
 });
 
+describe("parsePrompt tools injection", () => {
+  test("a missing role is rejected", () => {
+    expect(parsePrompt({ messages: [{ content: "x" }] })).toEqual({ ok: false, reason: "message 0 role must be one of system, user, assistant, tool" });
+  });
+
+  test("the tools array is injected as a <tools> block before the messages", () => {
+    const parsed = parsePrompt({
+      tools: [
+        { type: "function", function: { name: "bash", description: "Run a shell command", parameters: {} } },
+        { type: "function", function: { name: "edit", description: "Edit a file" } },
+      ],
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.prompt).toBe("<tools>\n- bash: Run a shell command\n- edit: Edit a file\n</tools>\n\n<user>\nhello\n</user>");
+  });
+
+  test("malformed tools entries are skipped and an empty tools array adds nothing", () => {
+    const parsed = parsePrompt({
+      tools: [
+        { type: "function", function: { name: "" } },
+        { type: "function", function: { description: "no name" } },
+        "not-an-object",
+      ],
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.prompt).toBe("<user>\nhi\n</user>");
+  });
+});
+
 describe("parsePrompt array-of-parts content", () => {
   test("text parts are extracted and joined", () => {
     const parsed = parsePrompt({

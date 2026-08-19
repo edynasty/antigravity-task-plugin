@@ -89,7 +89,32 @@ export function parsePrompt(value: unknown): PromptParse {
     }
     messages.push({ role, content: contentToString(content) });
   }
-  return { ok: true, messages, prompt: promptFromMessages(messages) };
+  const toolsPrompt = toolsToPrompt(value["tools"]);
+  const prompt = `${toolsPrompt === "" ? "" : `${toolsPrompt}\n\n`}${promptFromMessages(messages)}`;
+  return { ok: true, messages, prompt };
+}
+
+function toolsToPrompt(tools: unknown): string {
+  if (!Array.isArray(tools)) {
+    return "";
+  }
+  const lines: string[] = [];
+  for (const tool of tools) {
+    if (!isRecord(tool) || !isRecord(tool["function"])) {
+      continue;
+    }
+    const fn = tool["function"];
+    const name = typeof fn["name"] === "string" ? fn["name"] : "";
+    if (name === "") {
+      continue;
+    }
+    const description = typeof fn["description"] === "string" ? fn["description"] : "";
+    lines.push(`- ${name}${description === "" ? "" : `: ${description}`}`);
+  }
+  if (lines.length === 0) {
+    return "";
+  }
+  return `<tools>\n${lines.join("\n")}\n</tools>`;
 }
 
 export function promptFromMessages(messages: readonly OpenAIMessage[]): string {

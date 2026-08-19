@@ -234,8 +234,8 @@ describe("POST /v1/chat/completions streaming", () => {
     await response.text();
   });
 
-  test("tool steps stream as OpenAI tool_calls deltas with bounded arguments", async () => {
-    const { baseUrl, fake } = await spawn();
+  test("tool steps stream as OpenAI tool_calls deltas only when AGY_GATEWAY_STREAM_STEPS=1", async () => {
+    const { baseUrl, fake } = await spawn({}, { AGY_GATEWAY_STREAM_STEPS: "1" });
     const toolLine = JSON.stringify({
       event: "step_update",
       step_update: {
@@ -269,8 +269,8 @@ describe("POST /v1/chat/completions streaming", () => {
     expect(text).toContain("result text. ");
   });
 
-  test("tool step activity is disabled by AGY_GATEWAY_STREAM_STEPS=0", async () => {
-    const { baseUrl, fake } = await spawn({}, { AGY_GATEWAY_STREAM_STEPS: "0" });
+  test("tool step activity is disabled by default (no tool_calls emitted)", async () => {
+    const { baseUrl, fake } = await spawn();
     const toolLine = JSON.stringify({
       event: "step_update",
       step_update: {

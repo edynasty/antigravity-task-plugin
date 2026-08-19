@@ -125,7 +125,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   const created = Math.floor(Date.now() / 1000);
   const model = chat.model;
   const capChars = chat.maxTokens === null ? null : chat.maxTokens * 4;
-  const streamSteps = ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] !== "0" && ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] !== "false";
+  const streamSteps = ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] === "1" || ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] === "true";
   const streamingStarted = { value: false };
   let accumulated = "";
 
