@@ -133,6 +133,16 @@ export type ResultParse =
   | { readonly ok: true; readonly value: ResultPayload }
   | { readonly ok: false; readonly reason: InvalidResultReason };
 
+/**
+ * Tool step detail for the gateway SSE bridge only (never part of the plugin
+ * progress stream, which must not leak tool parameters). `inputJson` is the
+ * bounded JSON of step_update.tool_info.parameters; "{}" when absent.
+ */
+export interface ToolStepInfo {
+  readonly toolName: string;
+  readonly inputJson: string;
+}
+
 /** Tunable bounded buffers; each defaults to a named MAX_* constant. */
 export type ProtocolParserOptions = {
   readonly maxOutputChars?: number;
@@ -140,6 +150,7 @@ export type ProtocolParserOptions = {
   readonly maxDiagnostics?: number;
   readonly maxDiagnosticContextChars?: number;
   readonly onProgress?: (snapshot: ProgressSnapshot) => void;
+  readonly onToolInfo?: (info: ToolStepInfo) => void;
 };
 
 /**

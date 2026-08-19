@@ -438,7 +438,7 @@ AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
 | `AGY_GATEWAY_MODELS_TTL_S` | `3600` | `agy models` cache TTL |
 | `AGY_GATEWAY_CACHE_DIR` | `~/.agy-gateway` | Model cache directory |
 | `AGY_GATEWAY_CWD` | process cwd | agy's working directory (agent-mode runs operate relative to it) |
-| `AGY_GATEWAY_STREAM_STEPS` | `1` | Stream agy tool steps as visible `[agy: <tool>]` text deltas so clients show activity during tool phases; set `0` or `false` to emit only model text |
+| `AGY_GATEWAY_STREAM_STEPS` | `1` | Stream agy tool steps as OpenAI `tool_calls` deltas (rendered as tool-call cards by the AI SDK) so clients show activity during tool phases; set `0` or `false` to emit only model text |
 
 **Serial queue**: at most ONE agy task runs at a time (ban avoidance). Concurrent requests wait
 FIFO; a client disconnect removes its queued job.
@@ -461,22 +461,24 @@ on the default address, this config is copy-paste ready:
         "apiKey": "dummy"
       },
       "models": {
-        "gemini-3.7-flash-high": { "name": "Gemini 3.7 Flash (High)" },
-        "gemini-3.5-flash-medium": { "name": "Gemini 3.5 Flash (Medium)" },
-        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6 (Thinking)" },
-        "claude-opus-4-6": { "name": "Claude Opus 4.6 (Thinking)" },
-        "gpt-oss-120b": { "name": "GPT-OSS-120b" }
+        "Gemini 3.7 Flash (High)": { "name": "Gemini 3.7 Flash (High)" },
+        "Gemini 3.5 Flash (Medium)": { "name": "Gemini 3.5 Flash (Medium)" },
+        "Claude Sonnet 4.6 (Thinking)": { "name": "Claude Sonnet 4.6 (Thinking)" },
+        "Claude Opus 4.6 (Thinking)": { "name": "Claude Opus 4.6 (Thinking)" },
+        "GPT-OSS 120B (Medium)": { "name": "GPT-OSS 120B (Medium)" }
       }
     }
   }
 }
 ```
 
-The model list above is the builtin fallback; run `curl http://127.0.0.1:8787/v1/models` against a
-live gateway for the full list from your agy installation and add any entries you want to select.
-The `apiKey` is ignored unless `AGY_GATEWAY_TOKEN` is set — when it is, use that token here. If
-your OpenCode is configured with an `auth` requirement for the provider, prefer the token-based
-setup above. Restart OpenCode after editing the config.
+The model keys above are the **display names agy itself recognizes** (the gateway passes the
+request `model` verbatim to `agy --model`, which rejects aliases) and match the builtin
+fallback; run `curl http://127.0.0.1:8787/v1/models` against a live gateway for the full list
+from your agy installation and add any entries you want to select. The `apiKey` is ignored
+unless `AGY_GATEWAY_TOKEN` is set — when it is, use that token here. If your OpenCode is
+configured with an `auth` requirement for the provider, prefer the token-based setup above.
+Restart OpenCode after editing the config.
 
 ### Request → prompt framing
 
@@ -511,7 +513,9 @@ hard response cap of ~4 UTF-16 code units per token. Request `mode: "plan"` maps
 
 `stream=true` (default): SSE chunks shaped as OpenAI `chat.completion.chunk` objects, one per
 agy `step_update.text_delta`, then a `finish_reason:"stop"` chunk and `data: [DONE]`. Tool
-steps stream as `[agy: <tool>]` activity deltas (disable via `AGY_GATEWAY_STREAM_STEPS=0`).
+steps stream as OpenAI `tool_calls` deltas (one per tool step, name + bounded JSON
+arguments) so clients like the AI SDK render tool-call cards; disable via
+`AGY_GATEWAY_STREAM_STEPS=0`.
 The conversation id rides in an SSE **comment line** (`: conversation_id=<id>`), which strict
 OpenAI clients ignore — it is never emitted as a `data:` payload, because clients such as the
 AI SDK reject non-standard `data:` JSON. Streaming headers are written when the agy run
@@ -532,15 +536,16 @@ conversation (`--conversation <id>`). The resulting id is surfaced via the SSE c
 `GET /v1/models` spawns the local `agy models` subprocess (a subprocess, not a network call),
 parses one model per line (first token = id), and caches the result in
 `AGY_GATEWAY_CACHE_DIR/models.json`. Fallback chain: fresh cache → stale cache → builtin defaults
-(`gemini-3.7-flash-high`, `gemini-3.5-flash-medium`, `claude-sonnet-4-6`, `claude-opus-4-6`,
-`gpt-oss-120b`).
+(`Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (Medium)`, `Claude Sonnet 4.6 (Thinking)`,
+`Claude Opus 4.6 (Thinking)`, `GPT-OSS 120B (Medium)`).
 
 ### Out of scope (documented, not implemented)
 
-Interactive permission flows, model name mapping/aliasing, OpenAI `tool_calls` mapping, multi-user
-auth, and image content (image parts are dropped, never sent to agy). The request `model` is
-passed verbatim to `--model`; agy validates it, and an invalid model surfaces as a 500 with the
-(credential-redacted) agy detail.
+Interactive permission flows, model name mapping/aliasing, request-side OpenAI `tool_calls`
+execution (agy tools are streamed as `tool_calls` deltas for visibility, but client tool
+execution is not wired back), multi-user auth, and image content (image parts are dropped,
+never sent to agy). The request `model` is passed verbatim to `--model`; agy validates it,
+and an invalid model surfaces as a 500 with the (credential-redacted) agy detail.
 
 ### Docker deployment
 
@@ -576,6 +581,16 @@ possible. Instead the compose file bind-mounts the host's agy login state
 (`~/.gemini` — OAuth credentials, settings, caches) to `/root/.gemini`, so the
 container reuses your existing agy subscription with **no key needed** and no
 re-authentication.
+
+**Platform token path difference:** the macOS host build reads its OAuth token
+from `~/.gemini/jetski-standalone-oauth-token`, while the Linux container build
+reads `~/.gemini/antigravity-cli/antigravity-oauth-token` (same JSON layout:
+`{"token": {access_token, token_type, refresh_token, expiry}, "auth_method":
+"..."}`). On a fresh bind mount the container file does not exist and agy
+fails with `authentication failed or timed out`; the entrypoint seeds it once
+from the host file (both mount to the same `~/.gemini`), and agy refreshes the
+`access_token` itself afterwards. No manual step is needed beyond the bind
+mount.
 
 Alternative headless path — see
 [Using a Gemini API key](https://antigravity.google/docs/cli/install/) — is to

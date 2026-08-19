@@ -127,34 +127,6 @@ describe("NdjsonStreamParser onProgress observer", () => {
     ]);
   });
 
-  test("step_update snapshot carries tool_name for tool steps", () => {
-    const { snapshots } = collect(
-      `${line({
-        event: "step_update",
-        step_update: {
-          conversation_id: CONVERSATION_ID,
-          step_index: 3,
-          state: "ACTIVE",
-          step_type: "tool",
-          tool_name: "run_command",
-        },
-      })}\n`,
-    );
-    expect(snapshots).toEqual([
-      {
-        event: "step_update",
-        conversationId: CONVERSATION_ID,
-        stepIndex: 3,
-        state: "ACTIVE",
-        stepType: "tool",
-        toolName: "run_command",
-        elapsedSeconds: null,
-        totalTokens: null,
-        textDelta: null,
-      },
-    ]);
-  });
-
   test("result lines never emit a snapshot (authority deferred to terminal outcome)", () => {
     const { snapshots, outcome } = collect(`${resultEvent({ status: "SUCCESS", response: "r", usage: RESULT_USAGE })}\n`);
     expect(snapshots).toEqual([]);

@@ -221,22 +221,38 @@ describe("POST /v1/chat/completions streaming", () => {
     await response.text();
   });
 
-  test("tool steps stream as visible activity deltas", async () => {
+  test("tool steps stream as OpenAI tool_calls deltas with bounded arguments", async () => {
     const { baseUrl, fake } = await spawn();
     const toolLine = JSON.stringify({
       event: "step_update",
       step_update: {
         conversation_id: GW_CONVERSATION_ID,
         step_index: 1,
-        state: "DONE",
+        state: "ACTIVE",
         step_type: "tool",
         tool_name: "run_command",
+        tool_info: { name: "run_command", parameters: { CommandLine: "git status" } },
       },
     });
     fake.setStdout([gwInitLine(), toolLine, gwStepLine("result text. "), gwResultLine("SUCCESS", "ignored")].join("\n") + "\n");
     const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: true })));
     const text = await response.text();
-    expect(text).toContain('[agy: run_command]');
+    const toolChunk = text
+      .split("\n\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice(6))
+      .filter((line) => line !== "[DONE]")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((chunk) => {
+        const delta = (chunk["choices"] as Array<Record<string, unknown>>)[0]?.["delta"] as Record<string, unknown> | undefined;
+        return delta?.["tool_calls"] !== undefined;
+      });
+    const delta = (toolChunk?.["choices"] as Array<Record<string, unknown>>)[0]?.["delta"] as Record<string, unknown>;
+    const toolCall = (delta["tool_calls"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
+    expect(toolCall["type"]).toBe("function");
+    expect((toolCall["function"] as Record<string, unknown>)["name"]).toBe("run_command");
+    expect((toolCall["function"] as Record<string, unknown>)["arguments"]).toBe('{"CommandLine":"git status"}');
+    expect(text).not.toContain("[agy:");
     expect(text).toContain("result text. ");
   });
 
@@ -255,7 +271,7 @@ describe("POST /v1/chat/completions streaming", () => {
     fake.setStdout([gwInitLine(), toolLine, gwStepLine("result text. "), gwResultLine("SUCCESS", "ignored")].join("\n") + "\n");
     const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: true })));
     const text = await response.text();
-    expect(text).not.toContain("[agy:");
+    expect(text).not.toContain("tool_calls");
     expect(text).toContain("result text. ");
   });
 

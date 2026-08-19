@@ -13,13 +13,34 @@
  */
 import { ByteAccumulator } from "./byte-accumulator.js";
 import { ProtocolState, normalizeOptions } from "./protocol-state.js";
-import { initProgress, stepUpdateProgress } from "./progress.js";
+import { initProgress, nullableString, stepUpdateProgress } from "./progress.js";
 import { isRecord } from "./protocol-types.js";
-import type { ParserOutcome, ProgressSnapshot, ProtocolParserOptions } from "./protocol-types.js";
+import type { ParserOutcome, ProgressSnapshot, ProtocolParserOptions, ToolStepInfo } from "./protocol-types.js";
 import { redactCredentials } from "./redaction.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+/** Tool step arguments bounded to a JSON string; "{}" when the step carries no parameters. */
+const MAX_TOOL_INPUT_CHARS = 4_096;
+
+function toolInputJsonOf(payload: Readonly<Record<string, unknown>>): string | null {
+  const info = payload["tool_info"];
+  if (!isRecord(info)) {
+    return null;
+  }
+  const parameters = info["parameters"];
+  let json: string;
+  try {
+    json = JSON.stringify(parameters === undefined ? {} : parameters);
+  } catch {
+    return null;
+  }
+  if (json === undefined) {
+    return null;
+  }
+  return json.length <= MAX_TOOL_INPUT_CHARS ? json : `${json.slice(0, MAX_TOOL_INPUT_CHARS - 1)}\u2026`;
+}
 
 function isHighSurrogate(unit: string): boolean {
   const value = unit.charCodeAt(0);
@@ -36,6 +57,7 @@ export class NdjsonStreamParser {
   private readonly maxPendingLineBytes: number;
   private readonly maxDiagnosticContextChars: number;
   private readonly onProgress: ((snapshot: ProgressSnapshot) => void) | undefined;
+  private readonly onToolInfo: ((info: ToolStepInfo) => void) | undefined;
   private readonly pending = new ByteAccumulator();
   private pendingHighSurrogate: string | null = null;
   private lineNumber = 0;
@@ -49,6 +71,7 @@ export class NdjsonStreamParser {
     this.maxPendingLineBytes = normalized.maxPendingLineBytes;
     this.maxDiagnosticContextChars = normalized.maxDiagnosticContextChars;
     this.onProgress = options.onProgress;
+    this.onToolInfo = options.onToolInfo;
   }
 
   /** Feed the next chunk of stream output. Idempotently ignored after finish(). */
@@ -206,6 +229,7 @@ export class NdjsonStreamParser {
       case "step_update":
         this.state.handleStepUpdate(parsed, this.lineNumber);
         this.observe(stepUpdateProgress(parsed));
+        this.observeToolStep(parsed);
         break;
       case "result":
         // Result authority is deferred: no snapshot is observed here, so a
@@ -229,6 +253,30 @@ export class NdjsonStreamParser {
         // Progress observers are best-effort: a throwing observer never
         // alters parsing or the terminal outcome.
       }
+    }
+  }
+
+  private observeToolStep(payload: Readonly<Record<string, unknown>>): void {
+    if (this.onToolInfo === undefined) {
+      return;
+    }
+    const step = payload["step_update"];
+    if (!isRecord(step)) {
+      return;
+    }
+    if (nullableString(step["step_type"]) !== "tool") {
+      return;
+    }
+    const toolName = nullableString(step["tool_name"]);
+    if (toolName === null) {
+      return;
+    }
+    const inputJson = toolInputJsonOf(step) ?? "{}";
+    try {
+      this.onToolInfo({ toolName, inputJson });
+    } catch {
+      // Tool observers are best-effort: a throwing observer never alters
+      // parsing or the terminal outcome.
     }
   }
 

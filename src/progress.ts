@@ -7,7 +7,7 @@
 import { isRecord, isUsage } from "./protocol-types.js";
 import type { ProgressSnapshot } from "./protocol-types.js";
 
-function nullableString(value: unknown): string | null {
+export function nullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 

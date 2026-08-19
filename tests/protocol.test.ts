@@ -198,3 +198,100 @@ describe("arbitrary chunk boundaries preserve the outcome", () => {
     expect(parser.finish()).toEqual(reference);
   });
 });
+
+describe("onToolInfo: tool steps surface bounded arguments to the gateway bridge", () => {
+  const toolStepLine = (extra: Readonly<Record<string, unknown>>): string =>
+    `${JSON.stringify({
+      event: "step_update",
+      conversation_id: "conv-tool",
+      step_update: {
+        conversation_id: "conv-tool",
+        step_index: 3,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_name: "run_command",
+        ...extra,
+      },
+    })}\n`;
+
+  test("tool step with tool_info emits name and parameters as bounded JSON", () => {
+    const infos: Array<{ toolName: string; inputJson: string }> = [];
+    const parser = new NdjsonStreamParser({
+      onToolInfo: (info) => {
+        infos.push(info);
+      },
+    });
+    parser.push(toolStepLine({ tool_info: { name: "run_command", parameters: { CommandLine: "ls -la /tmp" } } }));
+    parser.finish();
+    expect(infos).toEqual([{ toolName: "run_command", inputJson: '{"CommandLine":"ls -la /tmp"}' }]);
+  });
+
+  test("tool step without tool_info emits empty-object arguments", () => {
+    const infos: Array<{ toolName: string; inputJson: string }> = [];
+    const parser = new NdjsonStreamParser({
+      onToolInfo: (info) => {
+        infos.push(info);
+      },
+    });
+    parser.push(toolStepLine({}));
+    parser.finish();
+    expect(infos).toEqual([{ toolName: "run_command", inputJson: "{}" }]);
+  });
+
+  test("tool_info parameters beyond the bound are truncated with an ellipsis", () => {
+    const infos: Array<{ toolName: string; inputJson: string }> = [];
+    const parser = new NdjsonStreamParser({
+      onToolInfo: (info) => {
+        infos.push(info);
+      },
+    });
+    parser.push(toolStepLine({ tool_info: { name: "run_command", parameters: { blob: "x".repeat(10_000) } } }));
+    parser.finish();
+    expect(infos).toHaveLength(1);
+    expect(infos[0]?.inputJson.endsWith("\u2026")).toBe(true);
+    expect(infos[0]?.inputJson.length).toBeLessThanOrEqual(4_096);
+  });
+
+  test("non-tool step_type never emits tool info even when tool_name is present", () => {
+    const infos: Array<{ toolName: string; inputJson: string }> = [];
+    const parser = new NdjsonStreamParser({
+      onToolInfo: (info) => {
+        infos.push(info);
+      },
+    });
+    parser.push(
+      `${JSON.stringify({
+        event: "step_update",
+        conversation_id: "conv-tool",
+        step_update: {
+          conversation_id: "conv-tool",
+          step_index: 3,
+          state: "DONE",
+          step_type: "thinking",
+          tool_name: "run_command",
+        },
+      })}\n`,
+    );
+    parser.finish();
+    expect(infos).toEqual([]);
+  });
+
+  test("progress snapshots never carry tool arguments (parameters stay out of the plugin stream)", () => {
+    const snapshots: Array<{ event: string; toolInputJson?: unknown }> = [];
+    const infos: Array<{ toolName: string; inputJson: string }> = [];
+    const parser = new NdjsonStreamParser({
+      onProgress: (snapshot) => {
+        snapshots.push(snapshot as { event: string; toolInputJson?: unknown });
+      },
+      onToolInfo: (info) => {
+        infos.push(info);
+      },
+    });
+    parser.push(toolStepLine({ tool_info: { name: "run_command", parameters: { secret: "s3cr3t" } } }));
+    parser.finish();
+    expect(infos).toHaveLength(1);
+    expect(snapshots).toHaveLength(1);
+    expect(Object.prototype.hasOwnProperty.call(snapshots[0] ?? {}, "toolInputJson")).toBe(false);
+    expect(JSON.stringify(snapshots)).not.toContain("s3cr3t");
+  });
+});

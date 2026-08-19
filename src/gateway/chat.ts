@@ -136,20 +136,32 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
         }
         const parser = new NdjsonStreamParser({
           onProgress: (snapshot) => {
-            if (snapshot.event !== "step_update" || signal.aborted) {
+            if (snapshot.event !== "step_update" || signal.aborted || snapshot.textDelta === null) {
               return;
             }
-            if (snapshot.textDelta !== null) {
-              const capped = boundedDelta(accumulated, snapshot.textDelta, capChars);
-              accumulated = capped.accumulated;
-              if (chat.stream && capped.emitted !== "") {
-                res.write(chatChunk(id, created, model, { content: capped.emitted }, null));
-              }
+            const capped = boundedDelta(accumulated, snapshot.textDelta, capChars);
+            accumulated = capped.accumulated;
+            if (chat.stream && capped.emitted !== "") {
+              res.write(chatChunk(id, created, model, { content: capped.emitted }, null));
+            }
+          },
+          onToolInfo: (info) => {
+            if (signal.aborted || !chat.stream || !streamSteps) {
               return;
             }
-            if (chat.stream && streamSteps && snapshot.stepType === "tool" && snapshot.toolName !== null) {
-              res.write(chatChunk(id, created, model, { content: `\n[agy: ${snapshot.toolName}]\n` }, null));
-            }
+            const toolCallId = `${ID_PREFIX}${randomBytes(8).toString("hex")}`;
+            res.write(
+              chatChunk(id, created, model, {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: toolCallId,
+                    type: "function",
+                    function: { name: info.toolName, arguments: info.inputJson },
+                  },
+                ],
+              }, null),
+            );
           },
         });
         let proc: ProcessResult;
