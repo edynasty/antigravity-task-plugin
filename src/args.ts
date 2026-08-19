@@ -8,6 +8,13 @@
  * no shell string is ever built, so metacharacters in user input cannot
  * interpolate or split.
  *
+ * With `viaStdin: true` the task is NOT passed as an argv element: the argv
+ * uses `--input-format text` instead, and the caller writes the raw prompt to
+ * the child's stdin. This bypasses the per-argument size limit (MAX_ARG_STRLEN,
+ * 128 KiB on Linux) that `-p <task>` would hit for large prompts. `--print-timeout`
+ * is also omitted in that mode: stdin EOF ends the run, and the host watchdog
+ * owns the timeout.
+ *
  * `timeoutSeconds` is an integer contract; the builder renders it as the Go
  * duration `${n}s` that `--print-timeout` requires. Ranges beyond "positive
  * integer" belong to the tool schema (Todo 5), not this layer.
@@ -20,6 +27,7 @@ export const DEFAULT_TIMEOUT_SECONDS = 300;
 
 export interface ArgvOptions {
   readonly task: string;
+  readonly viaStdin?: boolean;
   readonly mode?: Mode;
   readonly timeoutSeconds?: number;
   readonly model?: string;
@@ -60,16 +68,19 @@ export function buildArgv(options: ArgvOptions): readonly string[] {
     throw new ArgsError("conversation-conflict", "conversationId and continueConversation are mutually exclusive");
   }
   const mode = options.mode ?? DEFAULT_MODE;
-  const argv: string[] = [
-    "-p",
-    options.task,
-    "--output-format",
-    "stream-json",
-    "--print-timeout",
-    `${timeoutSeconds}s`,
-    "--mode",
-    modeFlag(mode),
-  ];
+  const viaStdin = options.viaStdin === true;
+  const argv: string[] = viaStdin
+    ? ["--input-format", "text", "--output-format", "stream-json", "--mode", modeFlag(mode)]
+    : [
+        "-p",
+        options.task,
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        `${timeoutSeconds}s`,
+        "--mode",
+        modeFlag(mode),
+      ];
   if (options.model !== undefined) {
     argv.push("--model", options.model);
   }

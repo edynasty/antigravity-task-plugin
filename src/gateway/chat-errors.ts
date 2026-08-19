@@ -27,7 +27,7 @@ function failureMessage(outcome: ParserOutcome & { readonly kind: "failure" }, c
     case "invalid-result":
       return `agy terminal result is invalid (${outcome.reason.detail})`;
     case "empty-output":
-      return "agy returned an empty response";
+      return "agy returned an empty response (the model produced no text; try a shorter conversation or retry)";
     default:
       return assertNever(outcome.reason);
   }

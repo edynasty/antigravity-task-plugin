@@ -24,6 +24,12 @@ import { boundedDelta, chatChunk, chatDone, conversationIdSse } from "./sse.js";
 
 const ID_PREFIX = "chatcmpl-";
 
+/** Total agy spawn attempts per chat request for transient eligibility-check
+ * network failures (EOF on the proxy tunnel). */
+const MAX_ELIGIBILITY_RETRIES = 3;
+/** Extra attempts for a completely empty agy response (no text at all). */
+const MAX_EMPTY_OUTPUT_RETRIES = 1;
+
 export type { ChatRequest, ChatRequestParse } from "./chat-request.js";
 
 export interface RequestMeta {
@@ -78,6 +84,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   try {
     argv = buildArgv({
       task: chat.prompt,
+      viaStdin: true,
       mode: chat.mode,
       timeoutSeconds,
       model: chat.model,
@@ -134,7 +141,11 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
           });
           res.flushHeaders();
         }
-        const parser = new NdjsonStreamParser({
+        let eligibilityAttempts = 0;
+        let emptyAttempts = 0;
+        for (let attempt = 1; ; attempt++) {
+          let emitted = false;
+          const parser = new NdjsonStreamParser({
           onProgress: (snapshot) => {
             if (snapshot.event !== "step_update" || signal.aborted || snapshot.textDelta === null) {
               return;
@@ -142,6 +153,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             const capped = boundedDelta(accumulated, snapshot.textDelta, capChars);
             accumulated = capped.accumulated;
             if (chat.stream && capped.emitted !== "") {
+              emitted = true;
               res.write(chatChunk(id, created, model, { content: capped.emitted }, null));
             }
           },
@@ -149,6 +161,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             if (signal.aborted || !chat.stream || !streamSteps) {
               return;
             }
+            emitted = true;
             const toolCallId = `${ID_PREFIX}${randomBytes(8).toString("hex")}`;
             res.write(
               chatChunk(id, created, model, {
@@ -171,6 +184,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             cwd: ctx.deps.cwd,
             env: ctx.deps.env,
             signal,
+            stdin: chat.prompt,
             hostTimeoutMs: timeoutSeconds * 1000 + HOST_GRACE_MS,
             onStdoutChunk: (chunk) => parser.push(chunk),
           });
@@ -179,6 +193,23 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
         }
         const outcome = parser.finish();
         if (outcome.kind === "failure") {
+          const eligibilityFailure =
+            outcome.reason.type === "status" &&
+            outcome.reason.error !== null &&
+            outcome.reason.error.includes("Eligibility check failed");
+          const emptyOutput = outcome.reason.type === "empty-output";
+          if (!emitted && !signal.aborted) {
+            if (eligibilityFailure && eligibilityAttempts < MAX_ELIGIBILITY_RETRIES - 1) {
+              eligibilityAttempts += 1;
+              ctx.log(`agy eligibility check failed on attempt ${attempt} of ${MAX_ELIGIBILITY_RETRIES}; retrying`);
+              continue;
+            }
+            if (emptyOutput && emptyAttempts < MAX_EMPTY_OUTPUT_RETRIES) {
+              emptyAttempts += 1;
+              ctx.log(`agy returned an empty response on attempt ${attempt}; retrying once`);
+              continue;
+            }
+          }
           throw outcomeFailureError(outcome, ctx.deps.cwd);
         }
         if (proc.exitCode !== 0 || proc.signal !== null) {
@@ -212,7 +243,10 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             total_tokens: outcome.usage.total_tokens,
           },
           ...(outcome.conversationId === null ? {} : { conversation_id: outcome.conversationId }),
-        });
+          });
+          return;
+        }
+        throw new GatewayHttpError(500, "upstream_error", "server_error", "agy eligibility check retries exhausted");
       },
     });
   } catch (error) {

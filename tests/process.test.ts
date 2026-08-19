@@ -115,6 +115,22 @@ describe("runAgy spawn and capture", () => {
     await assertProcessGone(pid);
   });
 
+  test("stdin payload is written to the child and EOF ends its input", async () => {
+    const dir = await makeTempDir();
+    const script =
+      "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>console.log('stdin:'+s.length+':'+s))";
+    const result = await runAgy({
+      argv: [process.execPath, "-e", script],
+      cwd: dir,
+      env: {},
+      signal: new AbortController().signal,
+      hostTimeoutMs: 5_000,
+      stdin: "hello-stdin",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdoutChunks.join("")).toBe("stdin:11:hello-stdin\n");
+  });
+
   test("missing cwd is a typed spawn-failed", async () => {
     const { path } = await makeExecutableAgy();
     const dir = await makeTempDir();

@@ -51,6 +51,42 @@ describe("buildArgv defaults and mode mapping", () => {
   });
 });
 
+describe("buildArgv viaStdin mode", () => {
+  test("swaps -p task for --input-format text and drops --print-timeout", () => {
+    expect(buildArgv({ task: "t", viaStdin: true })).toEqual([
+      "--input-format",
+      "text",
+      "--output-format",
+      "stream-json",
+      "--mode",
+      "accept-edits",
+    ]);
+  });
+
+  test("keeps mode, model, conversation and sandbox flags", () => {
+    expect(
+      buildArgv({ task: "t", viaStdin: true, mode: "plan", model: "Gemini 3.7 Flash (High)", conversationId: "c1", sandbox: true }),
+    ).toEqual([
+      "--input-format",
+      "text",
+      "--output-format",
+      "stream-json",
+      "--mode",
+      "plan",
+      "--model",
+      "Gemini 3.7 Flash (High)",
+      "--conversation",
+      "c1",
+      "--sandbox",
+    ]);
+  });
+
+  test("still validates the task is non-empty and timeouts are positive integers", () => {
+    expectKind(() => buildArgv({ task: "   ", viaStdin: true }), "empty-task");
+    expectKind(() => buildArgv({ task: "t", viaStdin: true, timeoutSeconds: 0 }), "invalid-timeout");
+  });
+});
+
 describe("buildArgv optional flags", () => {
   test("all options: model, conversation and sandbox appended in deterministic order", () => {
     expect(

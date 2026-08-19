@@ -101,6 +101,7 @@ export interface FakeGatewayDeps {
   readonly resolveCalls: number;
   readonly maxActive: number;
   setStdout(stdout: string): void;
+  setStdoutSequence(sequence: Array<{ stdout: string } | ProcessError>): void;
   failRun(error: ProcessError): void;
   failResolve(error: ResolveError): void;
   setBlocking(blocking: boolean): void;
@@ -114,6 +115,7 @@ export function makeGatewayDeps(envOverrides: Readonly<Record<string, string>> =
   let active = 0;
   let resolveOutcome: string | ResolveError = "/fake/agy";
   let runOutcome: ProcessResult | ProcessError = processResult();
+  let runOutcomeQueue: Array<ProcessResult | ProcessError> = [];
   let blocking = false;
   const blockers: Array<() => void> = [];
 
@@ -130,8 +132,10 @@ export function makeGatewayDeps(envOverrides: Readonly<Record<string, string>> =
     },
     runAgy: async (options) => {
       runCalls.push(options);
-      if (runOutcome instanceof ProcessError) {
-        throw runOutcome;
+      const queued = runOutcomeQueue.shift();
+      const outcome: ProcessResult | ProcessError = queued === undefined ? runOutcome : queued;
+      if (outcome instanceof ProcessError) {
+        throw outcome;
       }
       if (blocking) {
         await new Promise<void>((resolvePromise) => {
@@ -144,10 +148,10 @@ export function makeGatewayDeps(envOverrides: Readonly<Record<string, string>> =
       active += 1;
       maxActive = Math.max(maxActive, active);
       try {
-        for (const chunk of runOutcome.stdoutChunks) {
+        for (const chunk of outcome.stdoutChunks) {
           options.onStdoutChunk?.(chunk);
         }
-        return runOutcome;
+        return outcome;
       } finally {
         active -= 1;
       }
@@ -167,6 +171,11 @@ export function makeGatewayDeps(envOverrides: Readonly<Record<string, string>> =
     },
     setStdout(stdout) {
       runOutcome = processResult({ stdout });
+    },
+    setStdoutSequence(sequence) {
+      runOutcomeQueue = sequence.map((entry) =>
+        entry instanceof ProcessError ? entry : processResult({ stdout: entry.stdout }),
+      );
     },
     failRun(error) {
       runOutcome = error;

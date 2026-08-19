@@ -483,7 +483,7 @@ Restart OpenCode after editing the config.
 ### Request → prompt framing
 
 OpenAI `messages` (roles `system` / `user` / `assistant`, string content) are converted into a
-single role-labeled task prompt passed to agy as `-p`:
+single role-labeled task prompt passed to agy:
 
 ```text
 <system>
@@ -499,6 +499,12 @@ single role-labeled task prompt passed to agy as `-p`:
 </assistant>
 ```
 
+The prompt is delivered over the child's **stdin** (`--input-format text`, then
+stdin EOF), never as an argv element: `-p <task>` would hit the per-argument
+size limit (128 KiB on Linux, `E2BIG`) on large OpenCode conversations. This
+also means `--print-timeout` is not used in gateway mode — the host watchdog
+owns the timeout.
+
 Unknown roles, non-string non-array content, an empty `messages` array and an empty `model` are
 rejected with 400. Content accepts both a plain string and OpenAI's array-of-parts form: `text`
 parts are joined; `image_url` and other non-text parts are dropped (agy's prompt is plain text,
@@ -507,7 +513,12 @@ so images cannot be passed). The OpenAI `tool` role is accepted and framed as `<
 hard response cap of ~4 UTF-16 code units per token. Request `mode: "plan"` maps to the agy
 `--mode plan` CLI flag (never injected into the prompt text); the default is `execute`
 (`--mode accept-edits` — agy may modify files and run commands). `timeoutSeconds` maps to
-`--print-timeout <n>s` plus a host watchdog; expiry → 504.
+the host watchdog; expiry → 504.
+
+**Automatic retries:** transient agy eligibility-check failures (proxy/network
+EOF during startup checks) are retried up to 3 spawn attempts; a completely
+empty response (no text at all) is retried once. Retries spawn a fresh agy
+process and only happen before any stream content was emitted to the client.
 
 ### Responses
 

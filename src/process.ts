@@ -51,6 +51,7 @@ export interface SpawnOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly signal: AbortSignal;
   readonly hostTimeoutMs: number;
+  readonly stdin?: string;
   readonly terminateGraceMs?: number;
   readonly closeWatchMs?: number;
   readonly maxStdoutBytes?: number;
@@ -83,11 +84,17 @@ export function runAgy(options: SpawnOptions): Promise<ProcessResult> {
       child = spawn(command, args, {
         cwd: options.cwd,
         env: options.env === undefined ? undefined : { ...options.env },
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: options.stdin === undefined ? ["ignore", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
       rejectPromise(new ProcessError("spawn-failed", `failed to spawn agy: ${errorMessage(error)}`));
       return;
+    }
+
+    if (options.stdin !== undefined && child.stdin !== null) {
+      child.stdin.on("error", () => undefined);
+      child.stdin.write(options.stdin);
+      child.stdin.end();
     }
 
     type Phase = "running" | "terminating" | "done";

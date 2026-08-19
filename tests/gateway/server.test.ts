@@ -136,14 +136,26 @@ describe("POST /v1/chat/completions non-stream", () => {
     expect(executeArgv[executeArgv.indexOf("--mode") + 1]).toBe("accept-edits");
   });
 
-  test("timeoutSeconds maps to --print-timeout and the host watchdog", async () => {
+  test("timeoutSeconds maps to the host watchdog; stdin mode carries no --print-timeout", async () => {
     const { baseUrl, fake } = await spawn();
     fake.setStdout(gwStream(["d"], "ok"));
     await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false, timeoutSeconds: 12 })));
     const argv = fake.runCalls[0]?.argv ?? [];
-    expect(argv).toContain("--print-timeout");
-    expect(argv[argv.indexOf("--print-timeout") + 1]).toBe("12s");
+    expect(argv).not.toContain("--print-timeout");
+    expect(argv).toContain("--input-format");
+    expect(argv[argv.indexOf("--input-format") + 1]).toBe("text");
     expect(fake.runCalls[0]?.hostTimeoutMs).toBe(12_000 + HOST_GRACE_MS);
+  });
+
+  test("the prompt is delivered as stream-json NDJSON on stdin, not as an argv element", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["d"], "ok"));
+    await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false, messages: [{ role: "user", content: "say PONG" }] })));
+    const argv = fake.runCalls[0]?.argv ?? [];
+    expect(argv).not.toContain("-p");
+    const stdin = fake.runCalls[0]?.stdin ?? "";
+    expect(stdin).toContain("say PONG");
+    expect(stdin).not.toContain('"type"');
   });
 
   test("conversationId body field and x-agy-conversation header both forward --conversation", async () => {
@@ -502,6 +514,60 @@ describe("gateway routing", () => {
     expect(probeV1.status).toBe(200);
     const probeRoot = await fetch(baseUrl + "/");
     expect(probeRoot.status).toBe(200);
+  });
+});
+
+describe("eligibility-check retry", () => {
+  const eligibilityError = (): string =>
+    `${gwResultLine("ERROR", "", 'Eligibility check failed: Get "https://www.googleapis.com/oauth2/v2/userinfo": EOF')}\n`;
+
+  test("a transient eligibility failure is retried transparently and succeeds", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdoutSequence([{ stdout: eligibilityError() }, { stdout: gwStream(["d"], "ok") }]);
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    expect(body.choices[0]?.message.content).toBe("ok");
+    expect(fake.runCalls.length).toBe(2);
+  });
+
+  test("eligibility failures exhaust the retry budget and surface the upstream error", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdoutSequence([{ stdout: eligibilityError() }, { stdout: eligibilityError() }, { stdout: eligibilityError() }]);
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("upstream_error");
+    expect(body.error.message).toContain("Eligibility check failed");
+    expect(fake.runCalls.length).toBe(3);
+  });
+
+  test("non-eligibility failures are not retried", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdoutSequence([{ stdout: `${gwResultLine("ERROR", "", "some unrelated failure")}\n` }]);
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(500);
+    expect(fake.runCalls.length).toBe(1);
+  });
+
+  test("a completely empty response is retried once and can succeed", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdoutSequence([{ stdout: `${gwResultLine("SUCCESS", "")}\n` }, { stdout: gwStream(["d"], "ok") }]);
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    expect(body.choices[0]?.message.content).toBe("ok");
+    expect(fake.runCalls.length).toBe(2);
+  });
+
+  test("repeated empty responses exhaust the single retry and surface the error", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdoutSequence([{ stdout: `${gwResultLine("SUCCESS", "")}\n` }, { stdout: `${gwResultLine("SUCCESS", "")}\n` }]);
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("empty response");
+    expect(fake.runCalls.length).toBe(2);
   });
 });
 
