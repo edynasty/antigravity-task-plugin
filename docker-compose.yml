@@ -25,10 +25,17 @@ services:
       AGY_GATEWAY_MODELS_TTL_S: ${AGY_GATEWAY_MODELS_TTL_S:-3600}
       # Proxy passthrough: agy's eligibility check and model requests need to
       # reach Google; behind GFW-style networks the container MUST inherit the
-      # host proxy (docker containers do NOT get it automatically).
+      # host proxy (docker containers do NOT get it automatically). The
+      # entrypoint rewrites loopback (127.0.0.1/localhost) to
+      # host.docker.internal — inside the container 127.0.0.1 is the container
+      # itself, not the host.
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-}
+    extra_hosts:
+      # Resolve host.docker.internal to the host's gateway IP (macOS/Windows
+      # Docker Desktop provides this automatically; explicit for Linux).
+      - "host.docker.internal:host-gateway"
     volumes:
       # Host agy login state (OAuth credentials, settings, caches) — the
       # container reuses the host subscription, so `agy login` is never needed.

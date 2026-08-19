@@ -36,6 +36,13 @@ COPY --from=build /build/package.json ./package.json
 # CRITICAL: default bind host is 127.0.0.1, which is unreachable from the
 # host machine. Bind to all interfaces so the published port works.
 ENV AGY_GATEWAY_HOST=0.0.0.0
+# Rewrites HTTP(S)_PROXY loopback addresses (127.0.0.1/localhost) to
+# host.docker.internal so the container can reach a host-side proxy — inside
+# the container 127.0.0.1 points at the container itself. See compose's
+# extra_hosts and the README proxy section.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 EXPOSE 8787
 # node:22-slim has no curl; use Node's built-in fetch for the health probe.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
