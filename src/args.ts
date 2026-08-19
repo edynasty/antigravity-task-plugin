@@ -11,9 +11,9 @@
  * With `viaStdin: true` the task is NOT passed as an argv element: the argv
  * uses `--input-format text` instead, and the caller writes the raw prompt to
  * the child's stdin. This bypasses the per-argument size limit (MAX_ARG_STRLEN,
- * 128 KiB on Linux) that `-p <task>` would hit for large prompts. `--print-timeout`
- * is also omitted in that mode: stdin EOF ends the run, and the host watchdog
- * owns the timeout.
+ * 128 KiB on Linux) that `-p <task>` would hit for large prompts. All other
+ * flags (including `--print-timeout`) behave exactly as in `-p` mode; the host
+ * watchdog adds its own grace period on top.
  *
  * `timeoutSeconds` is an integer contract; the builder renders it as the Go
  * duration `${n}s` that `--print-timeout` requires. Ranges beyond "positive
@@ -69,18 +69,15 @@ export function buildArgv(options: ArgvOptions): readonly string[] {
   }
   const mode = options.mode ?? DEFAULT_MODE;
   const viaStdin = options.viaStdin === true;
-  const argv: string[] = viaStdin
-    ? ["--input-format", "text", "--output-format", "stream-json", "--mode", modeFlag(mode)]
-    : [
-        "-p",
-        options.task,
-        "--output-format",
-        "stream-json",
-        "--print-timeout",
-        `${timeoutSeconds}s`,
-        "--mode",
-        modeFlag(mode),
-      ];
+  const argv: string[] = [
+    ...(viaStdin ? ["--input-format", "text"] : ["-p", options.task]),
+    "--output-format",
+    "stream-json",
+    "--print-timeout",
+    `${timeoutSeconds}s`,
+    "--mode",
+    modeFlag(mode),
+  ];
   if (options.model !== undefined) {
     argv.push("--model", options.model);
   }

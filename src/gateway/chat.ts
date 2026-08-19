@@ -206,7 +206,9 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             }
             if (emptyOutput && emptyAttempts < MAX_EMPTY_OUTPUT_RETRIES) {
               emptyAttempts += 1;
-              ctx.log(`agy returned an empty response on attempt ${attempt}; retrying once`);
+              ctx.log(
+                `agy returned an empty response on attempt ${attempt} (promptBytes=${chat.prompt.length}); retrying once`,
+              );
               continue;
             }
           }

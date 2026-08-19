@@ -461,24 +461,25 @@ on the default address, this config is copy-paste ready:
         "apiKey": "dummy"
       },
       "models": {
-        "Gemini 3.7 Flash (High)": { "name": "Gemini 3.7 Flash (High)" },
-        "Gemini 3.5 Flash (Medium)": { "name": "Gemini 3.5 Flash (Medium)" },
-        "Claude Sonnet 4.6 (Thinking)": { "name": "Claude Sonnet 4.6 (Thinking)" },
-        "Claude Opus 4.6 (Thinking)": { "name": "Claude Opus 4.6 (Thinking)" },
-        "GPT-OSS 120B (Medium)": { "name": "GPT-OSS 120B (Medium)" }
+        "gemini-3.7-flash-high": { "name": "Gemini 3.7 Flash (High)" },
+        "gemini-3.5-flash-medium": { "name": "Gemini 3.5 Flash (Medium)" },
+        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6 (Thinking)" },
+        "claude-opus-4-6": { "name": "Claude Opus 4.6 (Thinking)" },
+        "gpt-oss-120b": { "name": "GPT-OSS-120b" }
       }
     }
   }
 }
 ```
 
-The model keys above are the **display names agy itself recognizes** (the gateway passes the
-request `model` verbatim to `agy --model`, which rejects aliases) and match the builtin
-fallback; run `curl http://127.0.0.1:8787/v1/models` against a live gateway for the full list
-from your agy installation and add any entries you want to select. The `apiKey` is ignored
-unless `AGY_GATEWAY_TOKEN` is set — when it is, use that token here. If your OpenCode is
-configured with an `auth` requirement for the provider, prefer the token-based setup above.
-Restart OpenCode after editing the config.
+The model keys are the **agy model slugs** (`agy models` prints `slug  display name`
+per line; the gateway passes the request `model` verbatim to `agy --model`, which
+accepts slugs) and match the builtin fallback; run
+`curl http://127.0.0.1:8787/v1/models` against a live gateway for the full slug list
+from your agy installation and add any entries you want to select. The `apiKey` is
+ignored unless `AGY_GATEWAY_TOKEN` is set — when it is, use that token here. If your
+OpenCode is configured with an `auth` requirement for the provider, prefer the
+token-based setup above. Restart OpenCode after editing the config.
 
 ### Request → prompt framing
 
@@ -501,9 +502,9 @@ single role-labeled task prompt passed to agy:
 
 The prompt is delivered over the child's **stdin** (`--input-format text`, then
 stdin EOF), never as an argv element: `-p <task>` would hit the per-argument
-size limit (128 KiB on Linux, `E2BIG`) on large OpenCode conversations. This
-also means `--print-timeout` is not used in gateway mode — the host watchdog
-owns the timeout.
+size limit (128 KiB on Linux, `E2BIG`) on large OpenCode conversations.
+`timeoutSeconds` still maps to `--print-timeout <n>s` plus a host watchdog;
+expiry → 504.
 
 Unknown roles, non-string non-array content, an empty `messages` array and an empty `model` are
 rejected with 400. Content accepts both a plain string and OpenAI's array-of-parts form: `text`
@@ -512,8 +513,7 @@ so images cannot be passed). The OpenAI `tool` role is accepted and framed as `<
 `temperature` and unknown fields are ignored. `max_tokens` (positive integer) maps to a
 hard response cap of ~4 UTF-16 code units per token. Request `mode: "plan"` maps to the agy
 `--mode plan` CLI flag (never injected into the prompt text); the default is `execute`
-(`--mode accept-edits` — agy may modify files and run commands). `timeoutSeconds` maps to
-the host watchdog; expiry → 504.
+(`--mode accept-edits` — agy may modify files and run commands).
 
 **Automatic retries:** transient agy eligibility-check failures (proxy/network
 EOF during startup checks) are retried up to 3 spawn attempts; a completely
@@ -545,10 +545,10 @@ conversation (`--conversation <id>`). The resulting id is surfaced via the SSE c
 ### Models
 
 `GET /v1/models` spawns the local `agy models` subprocess (a subprocess, not a network call),
-parses one model per line (first token = id), and caches the result in
+parses one model per line (first token = slug), and caches the result in
 `AGY_GATEWAY_CACHE_DIR/models.json`. Fallback chain: fresh cache → stale cache → builtin defaults
-(`Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (Medium)`, `Claude Sonnet 4.6 (Thinking)`,
-`Claude Opus 4.6 (Thinking)`, `GPT-OSS 120B (Medium)`).
+(`gemini-3.7-flash-high`, `gemini-3.5-flash-medium`, `claude-sonnet-4-6`, `claude-opus-4-6`,
+`gpt-oss-120b`).
 
 ### Out of scope (documented, not implemented)
 

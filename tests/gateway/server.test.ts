@@ -136,12 +136,13 @@ describe("POST /v1/chat/completions non-stream", () => {
     expect(executeArgv[executeArgv.indexOf("--mode") + 1]).toBe("accept-edits");
   });
 
-  test("timeoutSeconds maps to the host watchdog; stdin mode carries no --print-timeout", async () => {
+  test("timeoutSeconds maps to --print-timeout and the host watchdog in stdin mode", async () => {
     const { baseUrl, fake } = await spawn();
     fake.setStdout(gwStream(["d"], "ok"));
     await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false, timeoutSeconds: 12 })));
     const argv = fake.runCalls[0]?.argv ?? [];
-    expect(argv).not.toContain("--print-timeout");
+    expect(argv).toContain("--print-timeout");
+    expect(argv[argv.indexOf("--print-timeout") + 1]).toBe("12s");
     expect(argv).toContain("--input-format");
     expect(argv[argv.indexOf("--input-format") + 1]).toBe("text");
     expect(fake.runCalls[0]?.hostTimeoutMs).toBe(12_000 + HOST_GRACE_MS);

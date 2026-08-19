@@ -10,11 +10,11 @@ import { dirname, join } from "node:path";
 import type { GatewayDeps } from "./deps.js";
 
 export const BUILTIN_MODELS: readonly string[] = [
-  "Gemini 3.7 Flash (High)",
-  "Gemini 3.5 Flash (Medium)",
-  "Claude Sonnet 4.6 (Thinking)",
-  "Claude Opus 4.6 (Thinking)",
-  "GPT-OSS 120B (Medium)",
+  "gemini-3.7-flash-high",
+  "gemini-3.5-flash-medium",
+  "claude-sonnet-4-6",
+  "claude-opus-4-6",
+  "gpt-oss-120b",
 ];
 
 /** Host watchdog for the `agy models` subprocess (ms). */

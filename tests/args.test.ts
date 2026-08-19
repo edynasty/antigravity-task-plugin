@@ -52,12 +52,14 @@ describe("buildArgv defaults and mode mapping", () => {
 });
 
 describe("buildArgv viaStdin mode", () => {
-  test("swaps -p task for --input-format text and drops --print-timeout", () => {
+  test("swaps -p task for --input-format text but keeps --print-timeout", () => {
     expect(buildArgv({ task: "t", viaStdin: true })).toEqual([
       "--input-format",
       "text",
       "--output-format",
       "stream-json",
+      "--print-timeout",
+      "300s",
       "--mode",
       "accept-edits",
     ]);
@@ -65,16 +67,18 @@ describe("buildArgv viaStdin mode", () => {
 
   test("keeps mode, model, conversation and sandbox flags", () => {
     expect(
-      buildArgv({ task: "t", viaStdin: true, mode: "plan", model: "Gemini 3.7 Flash (High)", conversationId: "c1", sandbox: true }),
+      buildArgv({ task: "t", viaStdin: true, mode: "plan", model: "gemini-3.5-flash-medium", conversationId: "c1", sandbox: true }),
     ).toEqual([
       "--input-format",
       "text",
       "--output-format",
       "stream-json",
+      "--print-timeout",
+      "300s",
       "--mode",
       "plan",
       "--model",
-      "Gemini 3.7 Flash (High)",
+      "gemini-3.5-flash-medium",
       "--conversation",
       "c1",
       "--sandbox",
