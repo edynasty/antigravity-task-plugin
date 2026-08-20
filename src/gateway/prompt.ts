@@ -32,6 +32,23 @@ export interface OpenAIMessage {
   readonly content: string;
 }
 
+/** Host-injected context blocks (OpenCode's `<openviking-context>` memory
+ * recap) are stripped before framing: they are addressed to the client-side
+ * agent, not to agy, and leaving them in makes agy treat the injected memory
+ * recap as the task instead of the user's actual request. */
+const HOST_CONTEXT_BLOCK = /<openviking-context[\s\S]*?<\/openviking-context>/g;
+const EMPTY = "";
+
+export function stripHostContext(content: string): string {
+  return content.replace(HOST_CONTEXT_BLOCK, EMPTY);
+}
+
+/** A host tool the client made available (OpenAI function definition). */
+export interface HostTool {
+  readonly name: string;
+  readonly description: string;
+}
+
 export type PromptParse =
   | { readonly ok: true; readonly messages: readonly OpenAIMessage[]; readonly prompt: string }
   | { readonly ok: false; readonly reason: string };
@@ -65,7 +82,7 @@ function contentToString(content: unknown): string {
   return "";
 }
 
-export function parsePrompt(value: unknown): PromptParse {
+export function parsePrompt(value: unknown, toolClis: Readonly<Record<string, string>> = {}): PromptParse {
   if (!isRecord(value) || !Array.isArray(value["messages"])) {
     return { ok: false, reason: "messages must be an array" };
   }
@@ -90,7 +107,12 @@ export function parsePrompt(value: unknown): PromptParse {
     messages.push({ role, content: contentToString(content) });
   }
   const toolsPrompt = toolsToPrompt(value["tools"]);
-  const prompt = `${HOST_EXECUTION_DIRECTIVE}\n\n${toolsPrompt === "" ? "" : `${toolsPrompt}\n\n`}${promptFromMessages(messages)}`;
+  const hostTools = hostToolsDirective(hostToolList(value["tools"]), toolClis);
+  const prompt =
+    `${HOST_EXECUTION_DIRECTIVE}\n\n` +
+    `${toolsPrompt === "" ? "" : `${toolsPrompt}\n\n`}` +
+    `${hostTools === "" ? "" : `${hostTools}\n\n`}` +
+    promptFromMessages(messages);
   return { ok: true, messages, prompt };
 }
 
@@ -104,11 +126,16 @@ export const HOST_EXECUTION_DIRECTIVE =
   "Your tool calls are also executed on the host and their results are fed back to you as <tool> blocks.\n" +
   "Never modify files or run commands with side effects: changes must only be made by the host.";
 
-function toolsToPrompt(tools: unknown): string {
+export const HOST_MODE_DIRECTIVE =
+  "You are running directly on the user's machine with full access to all files and commands.\n" +
+  "You may read, edit, and run any command (including git and package managers) exactly like a local CLI.\n" +
+  "Tool calls you make are executed on this machine and their results come back as <tool> blocks.";
+
+export function hostToolList(tools: unknown): HostTool[] {
   if (!Array.isArray(tools)) {
-    return "";
+    return [];
   }
-  const lines: string[] = [];
+  const list: HostTool[] = [];
   for (const tool of tools) {
     if (!isRecord(tool) || !isRecord(tool["function"])) {
       continue;
@@ -119,14 +146,94 @@ function toolsToPrompt(tools: unknown): string {
       continue;
     }
     const description = typeof fn["description"] === "string" ? fn["description"] : "";
-    lines.push(`- ${name}${description === "" ? "" : `: ${description}`}`);
+    list.push({ name, description });
   }
-  if (lines.length === 0) {
+  return list;
+}
+
+function toolsToPrompt(tools: unknown): string {
+  const list = hostToolList(tools);
+  if (list.length === 0) {
     return "";
   }
-  return `<tools>\n${lines.join("\n")}\n</tools>`;
+  return `<tools>\n${list.map((tool) => `- ${tool.name}${tool.description === "" ? "" : `: ${tool.description}`}`).join("\n")}\n</tools>`;
+}
+
+import type { WorkspaceMount } from "./workspace.js";
+
+/** Rewrite host workspace paths in a prompt to their container paths
+ * (inverse of remapPath in tool-bridge.ts): OpenCode injects the host project
+ * path into the system/user text, and agy's own tools (search directory,
+ * view_file) run inside the container where only the mounted paths exist. */
+export function remapHostPathToContainer(text: string, mounts: readonly WorkspaceMount[]): string {
+  if (mounts.length === 0) {
+    return text;
+  }
+  const sorted = [...mounts].sort((a, b) => b.hostPath.length - a.hostPath.length);
+  let result = text;
+  for (const mount of sorted) {
+    const escaped = mount.hostPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`${escaped}(?=$|[^A-Za-z0-9_.-])`, "g");
+    result = result.replace(pattern, mount.containerPath);
+  }
+  return result;
+}
+
+/** Builds the AGY_GATEWAY_TOOL_CLIS mapping. Builtin defaults are applied
+ * first; env entries (comma-separated `pattern=cli`) override or extend. */
+export function parseToolClis(envValue: string | undefined): Record<string, string> {
+  const clis: Record<string, string> = { "github::*": "gh" };
+  if (envValue === undefined) {
+    return clis;
+  }
+  for (const part of envValue.split(",")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) {
+      continue;
+    }
+    const pattern = part.slice(0, eq).trim();
+    const cli = part.slice(eq + 1).trim();
+    if (pattern !== "" && cli !== "") {
+      clis[pattern] = cli;
+    }
+  }
+  return clis;
+}
+
+function cliForTool(name: string, clis: Readonly<Record<string, string>>): string | null {
+  for (const [pattern, cli] of Object.entries(clis)) {
+    const prefix = pattern.endsWith("*") ? pattern.slice(0, -1) : pattern;
+    if (name.startsWith(prefix)) {
+      return cli;
+    }
+  }
+  return null;
+}
+
+/** Explains to agy that host tools are not directly invocable, lists which of
+ * them have CLI equivalents reachable via run_command, and instructs it to
+ * describe the rest so the host can perform them and feed results back. */
+export function hostToolsDirective(tools: readonly HostTool[], clis: Readonly<Record<string, string>>): string {
+  if (tools.length === 0) {
+    return "";
+  }
+  const lines = tools.map((tool) => {
+    const cli = cliForTool(tool.name, clis);
+    return `- ${tool.name}${cli === null ? "" : ` -> CLI: ${cli}`}`;
+  });
+  return [
+    "<host-tools>",
+    "The host environment exposes tools you cannot invoke directly.",
+    "Reach a CLI equivalent via run_command when one exists:",
+    ...lines,
+    "Otherwise describe the operation in your reply; the host performs it and returns the result as a <tool> block.",
+    "Never invent tool invocations the host does not expose.",
+    "</host-tools>",
+  ].join("\n");
 }
 
 export function promptFromMessages(messages: readonly OpenAIMessage[]): string {
-  return messages.map((message) => `<${message.role}>\n${message.content}\n</${message.role}>`).join("\n\n");
+  return messages
+    .map((message) => `<${message.role}>\n${stripHostContext(message.content)}\n</${message.role}>`)
+    .join("\n\n");
 }

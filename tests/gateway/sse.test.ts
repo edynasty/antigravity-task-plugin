@@ -64,4 +64,14 @@ describe("boundedDelta response cap", () => {
     const result = boundedDelta("0123456789", "xy", 10);
     expect(result).toEqual({ accumulated: "0123456789", emitted: "", reached: true });
   });
+
+  test("an emoji inside the cap is emitted whole", () => {
+    const result = boundedDelta("", "\u{1F600}", 2);
+    expect(result).toEqual({ accumulated: "\u{1F600}", emitted: "\u{1F600}", reached: false });
+  });
+
+  test("a delta whose truncation would split a surrogate pair backs off one code unit", () => {
+    const result = boundedDelta("", "ab\u{1F600}", 3);
+    expect(result).toEqual({ accumulated: "ab", emitted: "ab", reached: true });
+  });
 });

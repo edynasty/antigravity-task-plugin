@@ -9,24 +9,50 @@
  * rewritten to the host path so the host executes against the real project.
  */
 
+import type { WorkspaceMount } from "./workspace.js";
+
 export interface TranslatedToolCall {
   name: string;
   arguments: string;
 }
 
-const BASH_TOOLS = new Set(["run_command", "run_command_with_output"]);
-const READ_TOOLS = new Set(["view_file", "view_directory"]);
+interface BridgeRule {
+  readonly toolNames: readonly string[];
+  readonly hostName: string;
+  readonly argKeys: readonly string[];
+  readonly argName: string;
+}
 
-/** Rewrite a container /workspace path to the host path the client sees. */
-export function remapPath(value: string, workspaceHostPath: string | null): string {
-  if (workspaceHostPath === null || workspaceHostPath === "") {
+const BRIDGE_RULES: readonly BridgeRule[] = [
+  {
+    toolNames: ["run_command", "run_command_with_output"],
+    hostName: "bash",
+    argKeys: ["CommandLine", "command"],
+    argName: "command",
+  },
+  {
+    toolNames: ["view_file", "view_directory"],
+    hostName: "read",
+    argKeys: ["FilePath", "file_path", "path"],
+    argName: "filePath",
+  },
+];
+
+/** Rewrite a container path to the host path the client sees, using the
+ * workspace mounts (longest containerPath wins, e.g. /workspace/p1 before
+ * /workspace). */
+export function remapPath(value: string, mounts: readonly WorkspaceMount[]): string {
+  if (mounts.length === 0) {
     return value;
   }
-  if (value === "/workspace") {
-    return workspaceHostPath;
-  }
-  if (value.startsWith("/workspace/")) {
-    return `${workspaceHostPath}${value.slice("/workspace".length)}`;
+  const sorted = [...mounts].sort((a, b) => b.containerPath.length - a.containerPath.length);
+  for (const mount of sorted) {
+    if (value === mount.containerPath) {
+      return mount.hostPath;
+    }
+    if (value.startsWith(`${mount.containerPath}/`)) {
+      return mount.hostPath + value.slice(mount.containerPath.length);
+    }
   }
   return value;
 }
@@ -44,7 +70,7 @@ function stringField(input: Record<string, unknown>, keys: readonly string[]): s
 export function translateToolCall(
   toolName: string,
   inputJson: string,
-  workspaceHostPath: string | null,
+  mounts: readonly WorkspaceMount[],
 ): TranslatedToolCall | null {
   let input: Record<string, unknown>;
   try {
@@ -56,19 +82,16 @@ export function translateToolCall(
   } catch {
     return null;
   }
-  if (BASH_TOOLS.has(toolName)) {
-    const command = stringField(input, ["CommandLine", "command"]);
-    if (command === null) {
+  for (const rule of BRIDGE_RULES) {
+    if (!rule.toolNames.includes(toolName)) {
+      continue;
+    }
+    const value = stringField(input, rule.argKeys);
+    if (value === null) {
       return null;
     }
-    return { name: "bash", arguments: JSON.stringify({ command: remapPath(command, workspaceHostPath) }) };
-  }
-  if (READ_TOOLS.has(toolName)) {
-    const filePath = stringField(input, ["FilePath", "file_path", "path"]);
-    if (filePath === null) {
-      return null;
-    }
-    return { name: "read", arguments: JSON.stringify({ filePath: remapPath(filePath, workspaceHostPath) }) };
+    const mapped = remapPath(value, mounts);
+    return { name: rule.hostName, arguments: JSON.stringify({ [rule.argName]: mapped }) };
   }
   return null;
 }

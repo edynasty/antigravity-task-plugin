@@ -7,12 +7,15 @@
  */
 import type { Mode } from "../args.js";
 import { GatewayHttpError } from "./errors.js";
-import { parsePrompt, type OpenAIMessage } from "./prompt.js";
+import { hostToolList, parsePrompt, parseToolClis, type HostTool, type OpenAIMessage } from "./prompt.js";
+
+const BUILTIN_TOOL_CLIS = parseToolClis(undefined);
 
 export interface ChatRequest {
   readonly model: string;
   readonly messages: readonly OpenAIMessage[];
   readonly prompt: string;
+  readonly tools: readonly HostTool[];
   readonly stream: boolean;
   readonly maxTokens: number | null;
   readonly timeoutSeconds: number | null;
@@ -36,7 +39,7 @@ function positiveInteger(value: unknown): boolean {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
-export function parseChatRequest(bodyText: string): ChatRequestParse {
+export function parseChatRequest(bodyText: string, toolClis: Readonly<Record<string, string>> = BUILTIN_TOOL_CLIS): ChatRequestParse {
   let parsed: unknown;
   try {
     parsed = JSON.parse(bodyText);
@@ -50,7 +53,7 @@ export function parseChatRequest(bodyText: string): ChatRequestParse {
   if (typeof model !== "string" || model.trim() === "") {
     return { ok: false, error: invalidRequest("model must be a non-empty string") };
   }
-  const promptParse = parsePrompt(parsed);
+  const promptParse = parsePrompt(parsed, toolClis);
   if (!promptParse.ok) {
     return { ok: false, error: invalidRequest(promptParse.reason) };
   }
@@ -80,6 +83,7 @@ export function parseChatRequest(bodyText: string): ChatRequestParse {
       model,
       messages: promptParse.messages,
       prompt: promptParse.prompt,
+      tools: hostToolList(parsed["tools"]),
       stream: stream === undefined ? true : stream,
       maxTokens: maxTokens === undefined ? null : (maxTokens as number),
       timeoutSeconds: timeoutSeconds === undefined ? null : (timeoutSeconds as number),

@@ -13,6 +13,7 @@ import type { ProcessResult, SpawnOptions } from "../../src/process";
 import type { GatewayDeps } from "../../src/gateway/deps";
 import type { GatewayConfig } from "../../src/gateway/server";
 import { createGatewayServer } from "../../src/gateway/server";
+import { parseToolClis } from "../../src/gateway/prompt";
 export const GW_CONVERSATION_ID = "conv-gateway-00000000-0000-4000-8000-000000000000";
 export const GW_RESULT_USAGE = {
   input_tokens: 10,
@@ -217,6 +218,8 @@ export async function startGateway(
     modelsTtlSeconds: 3600,
     cacheDir: "/tmp/agy-gateway-test",
     maxBodyBytes: 10_000_000,
+    sessionLruCapacity: 32,
+    toolClis: parseToolClis(undefined),
     ...overrides,
   };
   const server = createGatewayServer(fake.deps, config);

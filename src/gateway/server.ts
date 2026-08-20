@@ -18,7 +18,9 @@ import { GatewayHttpError } from "./errors.js";
 import { authorizationMatches, sendJson, sendJsonError } from "./http-util.js";
 import { listModels } from "./models.js";
 import { handleChat, type RequestMeta } from "./chat.js";
+import { parseToolClis } from "./prompt.js";
 import { SerialQueue } from "./queue.js";
+import { SessionStore } from "./session-store.js";
 import { boundDiagnosticText } from "../runner-types.js";
 
 export interface GatewayConfig {
@@ -30,6 +32,8 @@ export interface GatewayConfig {
   readonly modelsTtlSeconds: number;
   readonly cacheDir: string;
   readonly maxBodyBytes: number;
+  readonly sessionLruCapacity: number;
+  readonly toolClis: Readonly<Record<string, string>>;
 }
 
 function parsePort(value: string | undefined, fallback: number): number {
@@ -66,6 +70,8 @@ export function gatewayConfigFromEnv(env: Readonly<Record<string, string | undef
     modelsTtlSeconds: parsePositiveInt(env["AGY_GATEWAY_MODELS_TTL_S"], 3600),
     cacheDir: env["AGY_GATEWAY_CACHE_DIR"] ?? join(homedir(), ".agy-gateway"),
     maxBodyBytes: parsePositiveInt(env["AGY_GATEWAY_MAX_BODY_BYTES"], 10_000_000),
+    sessionLruCapacity: parsePositiveInt(env["AGY_GATEWAY_SESSION_LRU"], 32),
+    toolClis: parseToolClis(env["AGY_GATEWAY_TOOL_CLIS"]),
   };
 }
 
@@ -99,6 +105,7 @@ function modelsRoute(res: ServerResponse, deps: GatewayDeps, config: GatewayConf
 
 export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): Server {
   const queue = new SerialQueue(config.maxQueue);
+  const sessions = new SessionStore(config.sessionLruCapacity);
   return createServer((req, res) => {
     const meta: RequestMeta = { status: 200, model: null, errorMessage: null, promptBytes: null };
     const pathname = pathOf(req);
@@ -144,7 +151,7 @@ export function createGatewayServer(deps: GatewayDeps, config: GatewayConfig): S
     };
     switch (route) {
       case "POST /v1/chat/completions":
-        guard(handleChat(req, res, { deps, queue, defaultTimeoutSeconds: config.defaultTimeoutSeconds, maxBodyBytes: config.maxBodyBytes, log: console.log, meta }));
+        guard(handleChat(req, res, { deps, queue, sessions, toolClis: config.toolClis, defaultTimeoutSeconds: config.defaultTimeoutSeconds, maxBodyBytes: config.maxBodyBytes, log: console.log, meta }));
         return;
       case "GET /v1/models":
         modelsRoute(res, deps, config);

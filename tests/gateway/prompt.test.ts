@@ -4,7 +4,7 @@
  * CLI. The framing is the documented contract of the gateway.
  */
 import { describe, expect, test } from "bun:test";
-import { HOST_EXECUTION_DIRECTIVE, parsePrompt, promptFromMessages } from "../../src/gateway/prompt";
+import { HOST_EXECUTION_DIRECTIVE, parsePrompt, parseToolClis, promptFromMessages, remapHostPathToContainer } from "../../src/gateway/prompt";
 
 const DIRECTIVE = `${HOST_EXECUTION_DIRECTIVE}\n\n`;
 
@@ -53,7 +53,13 @@ describe("parsePrompt tools injection", () => {
     if (!parsed.ok) {
       return;
     }
-    expect(parsed.prompt).toBe(`${DIRECTIVE}<tools>\n- bash: Run a shell command\n- edit: Edit a file\n</tools>\n\n<user>\nhello\n</user>`);
+    expect(parsed.prompt).toBe(
+      `${DIRECTIVE}<tools>\n- bash: Run a shell command\n- edit: Edit a file\n</tools>\n\n` +
+        `<host-tools>\nThe host environment exposes tools you cannot invoke directly.\n` +
+        `Reach a CLI equivalent via run_command when one exists:\n- bash\n- edit\n` +
+        `Otherwise describe the operation in your reply; the host performs it and returns the result as a <tool> block.\n` +
+        `Never invent tool invocations the host does not expose.\n</host-tools>\n\n<user>\nhello\n</user>`,
+    );
   });
 
   test("malformed tools entries are skipped and an empty tools array adds nothing", () => {
@@ -173,5 +179,137 @@ describe("promptFromMessages framing", () => {
   test("empty string content is allowed", () => {
     const parsed = parsePrompt({ messages: [{ role: "user", content: "" }] });
     expect(parsed.ok).toBe(true);
+  });
+
+  test("openviking-context blocks are stripped from framed user content", () => {
+    const parsed = parsePrompt({
+      messages: [
+        {
+          role: "user",
+          content: "<openviking-context>\nRelevant memory.\n</openviking-context>\n实际请求内容",
+        },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(promptFromMessages(parsed.messages)).toBe("<user>\n\n实际请求内容\n</user>");
+    }
+  });
+
+  test("openviking-context blocks are stripped from every role", () => {
+    const parsed = parsePrompt({
+      messages: [
+        { role: "assistant", content: "<openviking-context>mem</openviking-context>ok" },
+        { role: "tool", content: "<openviking-context>mem</openviking-context>out" },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(promptFromMessages(parsed.messages)).toBe(
+        "<assistant>\nok\n</assistant>\n\n<tool>\nout\n</tool>",
+      );
+    }
+  });
+});
+
+describe("host-tools directive", () => {
+  test("is empty when the request has no tools", () => {
+    const parsed = parsePrompt({ messages: [{ role: "user", content: "hi" }] });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.prompt).toBe(`${DIRECTIVE}<user>\nhi\n</user>`);
+    expect(parsed.prompt).not.toContain("<host-tools>");
+  });
+
+  test("lists host tools with CLI equivalents from the builtin mapping", () => {
+    const parsed = parsePrompt(
+      {
+        tools: [{ type: "function", function: { name: "github::create_issue", description: "Create an issue" } }],
+        messages: [{ role: "user", content: "hi" }],
+      },
+      parseToolClis(undefined),
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.prompt).toContain("- github::create_issue -> CLI: gh");
+    expect(parsed.prompt).toContain("cannot invoke directly");
+    expect(parsed.prompt).toContain("returns the result as a <tool> block");
+  });
+
+  test("env mapping overrides and extends the builtin defaults", () => {
+    const clis = parseToolClis("github::*=ghp,context7::*=npx context7");
+    const parsed = parsePrompt(
+      {
+        tools: [
+          { type: "function", function: { name: "github::create_issue" } },
+          { type: "function", function: { name: "context7::query-docs" } },
+        ],
+        messages: [{ role: "user", content: "hi" }],
+      },
+      clis,
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.prompt).toContain("- github::create_issue -> CLI: ghp");
+    expect(parsed.prompt).toContain("- context7::query-docs -> CLI: npx context7");
+  });
+
+  test("malformed env entries are skipped", () => {
+    const clis = parseToolClis("no-equals,=novalue,key=,valid=cli");
+    expect(clis["valid"]).toBe("cli");
+    expect(clis["no-equals"]).toBeUndefined();
+    expect(clis[""]).toBeUndefined();
+    expect(clis["key"]).toBeUndefined();
+    expect(clis["github::*"]).toBe("gh");
+  });
+
+  test("tools without a CLI match are listed without one", () => {
+    const parsed = parsePrompt({
+      tools: [{ type: "function", function: { name: "custom-tool" } }],
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.prompt).toContain("- custom-tool\n");
+    expect(parsed.prompt).not.toContain("-> CLI:");
+  });
+});
+
+describe("remapHostPathToContainer", () => {
+  const mounts = [
+    { hostPath: "/Users/a/p1", containerPath: "/workspace/p1" },
+    { hostPath: "/Users/a/p2", containerPath: "/workspace/p2" },
+  ] as const;
+
+  test("no mounts leaves text untouched", () => {
+    expect(remapHostPathToContainer("work on /Users/a/p1/src", [])).toBe("work on /Users/a/p1/src");
+  });
+
+  test("host path is rewritten to its container path", () => {
+    expect(remapHostPathToContainer("work on /Users/a/p1/src/index.ts", mounts)).toBe(
+      "work on /workspace/p1/src/index.ts",
+    );
+  });
+
+  test("each mount rewrites independently", () => {
+    expect(remapHostPathToContainer("check /Users/a/p1 and /Users/a/p2", mounts)).toBe(
+      "check /workspace/p1 and /workspace/p2",
+    );
+  });
+
+  test("path-like prefixes are not rewritten", () => {
+    expect(remapHostPathToContainer("open /Users/a/p1x", mounts)).toBe("open /Users/a/p1x");
+  });
+
+  test("exact host path maps to exact container path", () => {
+    expect(remapHostPathToContainer("cwd=/Users/a/p2", mounts)).toBe("cwd=/workspace/p2");
   });
 });

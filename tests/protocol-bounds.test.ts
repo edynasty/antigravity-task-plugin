@@ -60,6 +60,31 @@ describe("bounded output and diagnostics", () => {
     }
   });
 
+  test("delta accumulation never splits a surrogate pair at the output cap", () => {
+    const stream = [
+      initEvent(),
+      stepEvent({ stepIndex: 0, state: "DONE", textDelta: "ab\u{1F600}cd" }),
+      resultEvent({ status: "SUCCESS", response: "" }),
+    ].join("\n");
+    const outcome = parseAll(stream, { maxOutputChars: 3 });
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.text).toBe("ab");
+    }
+  });
+
+  test("an oversized result.response never splits a surrogate pair", () => {
+    const stream = [
+      initEvent(),
+      resultEvent({ status: "SUCCESS", response: "\u{1F600}\u{1F600}\u{1F600}" }),
+    ].join("\n");
+    const outcome = parseAll(stream, { maxOutputChars: 3, maxPendingLineBytes: 4096 });
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.text).toBe("\u{1F600}");
+    }
+  });
+
   test("an oversized unterminated line is skipped with a line-too-long diagnostic and parsing resumes", () => {
     const parser = new NdjsonStreamParser({ maxPendingLineBytes: 256 });
     parser.push("x".repeat(1000));

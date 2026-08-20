@@ -422,6 +422,30 @@ agy CLI binary as a subprocess and talking to it over its stdio NDJSON protocol.
 access is known to cause account bans; the archived agy-tools-rust repository is the
 counterexample that motivated this design.
 
+### Deployment modes
+
+The gateway supports two deployment modes, mirroring Codex's `--sandbox` on/off
+choice:
+
+**Host mode (default, recommended).** Run the gateway directly on the host:
+
+```bash
+npm run build
+AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
+```
+
+agy runs as a host process and can access **every file on the host**, exactly
+like an unsandboxed Codex CLI — no workspace mounting, no path rewriting, and
+no `AGY_GATEWAY_WORKSPACE(S)` needed. Multi-session / multi-project setups just
+work: every host path agy sees in the prompt is real and readable.
+
+**Docker sandbox mode.** Run the gateway in a container (see
+[Docker deployment](#docker-deployment)) when you want agy isolated from the
+host filesystem. The container only sees what is bind-mounted, so configure
+`AGY_GATEWAY_WORKSPACE` / `AGY_GATEWAY_WORKSPACES` to expose the host projects
+agy may touch; the gateway rewrites host paths in the prompt to their container
+paths and maps bridged tool calls back.
+
 ### Run
 
 ```bash
@@ -440,7 +464,10 @@ AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
 | `AGY_GATEWAY_CACHE_DIR` | `~/.agy-gateway` | Model cache directory |
 | `AGY_GATEWAY_CWD` | process cwd | agy's working directory (agent-mode runs operate relative to it) |
  | `AGY_GATEWAY_STREAM_STEPS` | `1` | Stream agy tool steps as OpenAI `tool_calls` deltas, bridged onto host tool names (`run_command`→`bash`, `view_file`→`read`) so clients can actually execute them; set `0` or `false` to emit only model text |
- | `AGY_GATEWAY_WORKSPACE` | (see below) | Host path of the directory mounted at `/workspace`; the gateway rewrites container paths (`/workspace/...`) to this host path in bridged tool calls |
+ | `AGY_GATEWAY_WORKSPACE` | (see below) | Docker sandbox mode: host path of the directory mounted at `/workspace`; host paths in prompts are rewritten to container paths and bridged tool calls map back. Unset in host mode |
+ | `AGY_GATEWAY_WORKSPACES` | (none) | Docker sandbox mode, multiple workspaces: comma-separated `hostPath=containerPath` pairs (e.g. `/Users/a/p1=/workspace/p1,/Users/a/p2=/workspace/p2`). Each request's prompt is rewritten independently, so several host projects / sessions can share one gateway; longest `containerPath` wins when mapping tool calls back |
+| `AGY_GATEWAY_SESSION_LRU` | `32` | Max remembered agy conversations for incremental reuse (fingerprint LRU) |
+| `AGY_GATEWAY_TOOL_CLIS` | (see below) | Comma-separated `pattern=cli` hints telling agy which host/MCP tools are reachable via a CLI (`github::*=gh` is built in) |
 
 **Serial queue**: at most ONE agy task runs at a time (ban avoidance). Concurrent requests wait
 FIFO; a client disconnect removes its queued job.
@@ -502,6 +529,15 @@ single role-labeled task prompt passed to agy:
 </assistant>
 ```
 
+If the request carried a `tools` array, two extra blocks are prepended:
+
+- `<tools>` — the host tool names and descriptions the client made available.
+- `<host-tools>` — a directive explaining agy cannot invoke those tools directly:
+  it should reach a CLI equivalent via `run_command` when one exists (tools matching
+  `AGY_GATEWAY_TOOL_CLIS` patterns are annotated with their CLI, e.g. `github::*` → `gh`),
+  and otherwise describe the operation so the host can perform it and feed the result
+  back as a `<tool>` block.
+
 The prompt is delivered over the child's **stdin** (`--input-format text`, then
 stdin EOF), never as an argv element: `-p <task>` would hit the per-argument
 size limit (128 KiB on Linux, `E2BIG`) on large OpenCode conversations.
@@ -546,6 +582,14 @@ JSON errors.
 Pass the non-standard body field `conversationId` or the `x-agy-conversation` header to resume a
 conversation (`--conversation <id>`). The resulting id is surfaced via the SSE comment line
 (stream) or the `conversation_id` field (non-stream).
+
+The gateway additionally **resumes matching conversations automatically**: the message sequence
+(excluding the `system` message, which OpenCode regenerates every request; injected
+`<openviking-context>` blocks are stripped before hashing) is fingerprinted and remembered in an
+LRU (`AGY_GATEWAY_SESSION_LRU`, default 32). When a request is a strict continuation of a
+known conversation, the gateway sends `--conversation <id>` plus only the messages added since
+the last turn — the client gets the full conversation semantics while agy sees a small,
+incremental prompt. An explicit `conversationId` / header always wins over the automatic match.
 
 ### Models
 

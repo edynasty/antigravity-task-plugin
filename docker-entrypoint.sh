@@ -18,11 +18,13 @@ fi
 # "auth_method": "..."}). On a fresh bind mount the container file does not
 # exist, so agy reports "authentication failed or timed out". Seed it once
 # from the host file; agy refreshes the access_token itself afterwards.
-if [ ! -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] &&
-   [ -f "$HOME/.gemini/jetski-standalone-oauth-token" ]; then
-  mkdir -p "$HOME/.gemini/antigravity-cli"
-  cp "$HOME/.gemini/jetski-standalone-oauth-token" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
-  chmod 600 "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+if [ -f "$HOME/.gemini/jetski-standalone-oauth-token" ]; then
+  if [ ! -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] ||
+     [ "$HOME/.gemini/jetski-standalone-oauth-token" -nt "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ]; then
+    mkdir -p "$HOME/.gemini/antigravity-cli"
+    cp "$HOME/.gemini/jetski-standalone-oauth-token" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+    chmod 600 "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+  fi
 fi
 
 exec "$@"

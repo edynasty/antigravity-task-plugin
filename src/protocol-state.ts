@@ -13,6 +13,7 @@ import {
   isUsage,
   parseResultPayload,
 } from "./protocol-types.js";
+import { truncateUtf16 } from "./utf16.js";
 import type {
   Diagnostic,
   Failure,
@@ -227,7 +228,7 @@ export class ProtocolState {
     if (room <= 0) {
       return;
     }
-    const part = delta.length > room ? delta.slice(0, room) : delta;
+    const part = delta.length > room ? truncateUtf16(delta, room) : delta;
     this.textParts.push(part);
     this.textLength += part.length;
     if (part.length < delta.length && !this.textTruncated) {
@@ -244,7 +245,7 @@ export class ProtocolState {
       this.textTruncated = true;
       this.addDiagnostic({ kind: "output-truncated", limit: this.options.maxOutputChars });
     }
-    return response.slice(0, this.options.maxOutputChars);
+    return truncateUtf16(response, this.options.maxOutputChars);
   }
 
   private sumStepUsage(): Usage {

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { ProcessError, ResolveError } from "../../src/process-types";
 import { BUILTIN_MODELS } from "../../src/gateway/models";
 import { gatewayConfigFromEnv } from "../../src/gateway/server";
+import { HOST_EXECUTION_DIRECTIVE, HOST_MODE_DIRECTIVE } from "../../src/gateway/prompt";
 import { HOST_GRACE_MS } from "../../src/process-types";
 import {
   GW_CONVERSATION_ID,
@@ -534,6 +535,17 @@ describe("eligibility-check retry", () => {
     expect(fake.runCalls.length).toBe(2);
   });
 
+  test("a transient authentication timeout is retried transparently and succeeds", async () => {
+    const { baseUrl, fake } = await spawn();
+    const authError = `${gwResultLine("ERROR", "", "authentication failed or timed out")}\n`;
+    fake.setStdoutSequence([{ stdout: authError }, { stdout: gwStream(["d"], "ok") }]);
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    expect(body.choices[0]?.message.content).toBe("ok");
+    expect(fake.runCalls.length).toBe(2);
+  });
+
   test("eligibility failures exhaust the retry budget and surface the upstream error", async () => {
     const { baseUrl, fake } = await spawn();
     fake.setStdoutSequence([{ stdout: eligibilityError() }, { stdout: eligibilityError() }, { stdout: eligibilityError() }]);
@@ -599,5 +611,203 @@ describe("gatewayConfigFromEnv", () => {
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: { message: string } };
     expect(body.error.message).toContain("request body exceeds");
+  });
+});
+
+describe("incremental conversation reuse", () => {
+  test("same session resumes the agy conversation and sends only new messages", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["first answer. "], "first answer."));
+    const firstBody = {
+      model: "gemini-3.5-flash-medium",
+      stream: false,
+      messages: [
+        { role: "system", content: "system v1" },
+        { role: "user", content: "question one" },
+      ],
+    };
+    const first = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(firstBody));
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { conversation_id: string };
+    expect(firstJson.conversation_id).toBe(GW_CONVERSATION_ID);
+
+    fake.setStdout(gwStream(["second answer. "], "second answer."));
+    const secondBody = {
+      model: "gemini-3.5-flash-medium",
+      messages: [
+        { role: "system", content: "regenerated system prompt" },
+        { role: "user", content: "question one" },
+        { role: "assistant", content: "first answer." },
+        { role: "user", content: "question two" },
+      ],
+    };
+    const second = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(secondBody));
+    expect(second.status).toBe(200);
+
+    const firstArgv = fake.runCalls[0]?.argv ?? [];
+    const secondArgv = fake.runCalls[1]?.argv ?? [];
+    expect(firstArgv).not.toContain("--conversation");
+    expect(secondArgv).toContain("--conversation");
+    expect(secondArgv[secondArgv.indexOf("--conversation") + 1]).toBe(GW_CONVERSATION_ID);
+
+    const secondStdin = fake.runCalls[1]?.stdin ?? "";
+    expect(secondStdin).toContain("first answer.");
+    expect(secondStdin).toContain("question two");
+    expect(secondStdin).not.toContain("question one");
+    expect(secondStdin).not.toContain("system v1");
+  });
+
+  test("a different conversation does not resume", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["a"], "a"));
+    await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody()));
+    fake.setStdout(gwStream(["b"], "b"));
+    const other = {
+      model: "gemini-3.5-flash-medium",
+      messages: [{ role: "user", content: "a completely different question" }],
+    };
+    await fetch(baseUrl + "/v1/chat/completions", jsonRequest(other));
+    expect(fake.runCalls[1]?.argv ?? []).not.toContain("--conversation");
+  });
+
+  test("explicit client conversation id wins over the session store", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["a"], "a"));
+    await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody()));
+    fake.setStdout(gwStream(["b"], "b"));
+    await fetch(
+      baseUrl + "/v1/chat/completions",
+      jsonRequest(chatBody({ messages: [{ role: "user", content: "follow up" }], conversationId: "conv-explicit" })),
+    );
+    const argv = fake.runCalls[1]?.argv ?? [];
+    expect(argv).toContain("--conversation");
+    expect(argv[argv.indexOf("--conversation") + 1]).toBe("conv-explicit");
+  });
+});
+
+describe("host-tools bridge directive", () => {
+  test("request tools are passed to agy as a host-tools block with CLI hints", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["ok. "], "ok."));
+    const response = await fetch(
+      baseUrl + "/v1/chat/completions",
+      jsonRequest(chatBody({ stream: false, tools: [{ type: "function", function: { name: "bash" } }] })),
+    );
+    expect(response.status).toBe(200);
+    const stdin = fake.runCalls[0]?.stdin ?? "";
+    expect(stdin).toContain("<host-tools>");
+    expect(stdin).toContain("cannot invoke directly");
+  });
+
+  test("github MCP tools are annotated with the gh CLI by default", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["ok. "], "ok."));
+    const body = chatBody({
+      stream: false,
+      tools: [
+        { type: "function", function: { name: "github::create_issue", description: "Create an issue" } },
+        { type: "function", function: { name: "bash", description: "Run a shell command" } },
+      ],
+    });
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(body));
+    expect(response.status).toBe(200);
+    const stdin = fake.runCalls[0]?.stdin ?? "";
+    expect(stdin).toContain("- github::create_issue -> CLI: gh");
+    expect(stdin).toContain("- bash");
+  });
+
+  test("incremental prompts keep the host-tools directive", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["first. "], "first."));
+    await fetch(
+      baseUrl + "/v1/chat/completions",
+      jsonRequest(chatBody({ stream: false, tools: [{ type: "function", function: { name: "bash" } }] })),
+    );
+    fake.setStdout(gwStream(["second. "], "second."));
+    const second = {
+      model: "gemini-3.5-flash-medium",
+      stream: false,
+      tools: [{ type: "function", function: { name: "bash" } }],
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "first." },
+        { role: "user", content: "and now?" },
+      ],
+    };
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(second));
+    expect(response.status).toBe(200);
+    const stdin = fake.runCalls[1]?.stdin ?? "";
+    expect(stdin).toContain("<host-tools>");
+    expect(stdin).not.toContain("hello");
+  });
+});
+
+describe("execution mode directive", () => {
+  test("no workspace mounts (host mode): agy is told it runs directly on the host", async () => {
+    const { baseUrl, fake } = await spawn();
+    fake.setStdout(gwStream(["ok. "], "ok."));
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(200);
+    const stdin = fake.runCalls[0]?.stdin ?? "";
+    expect(stdin).toContain(HOST_MODE_DIRECTIVE);
+    expect(stdin).not.toContain("mounted at /workspace");
+    expect(stdin).not.toContain("Never modify files");
+  });
+
+  test("workspace mounts (docker sandbox): agy is told it runs in a container without side effects", async () => {
+    const { baseUrl, fake } = await spawn({}, { AGY_GATEWAY_WORKSPACE: "/Users/tangxingpeng/IdeaProjects/me/antigravity-task-plugin" });
+    fake.setStdout(gwStream(["ok. "], "ok."));
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: false })));
+    expect(response.status).toBe(200);
+    const stdin = fake.runCalls[0]?.stdin ?? "";
+    expect(stdin).toContain(HOST_EXECUTION_DIRECTIVE);
+    expect(stdin).not.toContain("running directly on the user's machine");
+  });
+});
+
+describe("multi-workspace mapping", () => {
+  const WORKSPACES = "/Users/tangxingpeng/IdeaProjects/me/antigravity-task-plugin=/workspace/p1,/Users/tangxingpeng/IdeaProjects/other-project=/workspace/p2";
+
+  test("each request's host workspace paths are rewritten to its own container mount", async () => {
+    const { baseUrl, fake } = await spawn({}, { AGY_GATEWAY_WORKSPACES: WORKSPACES });
+    fake.setStdout(gwStream(["ok "], "ok"));
+    const first = await fetch(
+      baseUrl + "/v1/chat/completions",
+      jsonRequest(chatBody({ messages: [{ role: "user", content: "work on /Users/tangxingpeng/IdeaProjects/me/antigravity-task-plugin/src/chat.ts" }] })),
+    );
+    expect(first.status).toBe(200);
+    const stdin1 = fake.runCalls[0]?.stdin ?? "";
+    expect(stdin1).toContain("/workspace/p1/src/chat.ts");
+    expect(stdin1).not.toContain("/Users/tangxingpeng/IdeaProjects/me/antigravity-task-plugin");
+
+    const second = await fetch(
+      baseUrl + "/v1/chat/completions",
+      jsonRequest(chatBody({ messages: [{ role: "user", content: "check /Users/tangxingpeng/IdeaProjects/other-project/README.md" }] })),
+    );
+    expect(second.status).toBe(200);
+    const stdin2 = fake.runCalls[1]?.stdin ?? "";
+    expect(stdin2).toContain("/workspace/p2/README.md");
+    expect(stdin2).not.toContain("/Users/tangxingpeng/IdeaProjects/other-project");
+    expect(stdin2).not.toContain("/workspace/p1");
+  });
+
+  test("bridged tool calls map back to the matching host workspace", async () => {
+    const { baseUrl, fake } = await spawn({}, { AGY_GATEWAY_STREAM_STEPS: "1", AGY_GATEWAY_WORKSPACES: WORKSPACES });
+    const toolLine = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        conversation_id: GW_CONVERSATION_ID,
+        step_index: 1,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_name: "view_file",
+        tool_info: { name: "view_file", parameters: { FilePath: "/workspace/p2/src/main.ts" } },
+      },
+    });
+    fake.setStdout([gwInitLine(), toolLine, gwStepLine("text. "), gwResultLine("SUCCESS", "ignored")].join("\n") + "\n");
+    const response = await fetch(baseUrl + "/v1/chat/completions", jsonRequest(chatBody({ stream: true })));
+    const text = await response.text();
+    expect(text).toContain("/Users/tangxingpeng/IdeaProjects/other-project/src/main.ts");
+    expect(text).not.toContain("/workspace/p2");
   });
 });

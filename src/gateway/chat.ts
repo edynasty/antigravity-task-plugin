@@ -19,14 +19,19 @@ import { parseChatRequest } from "./chat-request.js";
 import type { GatewayDeps } from "./deps.js";
 import { GatewayHttpError } from "./errors.js";
 import { readRequestBody, sendJson, sendJsonError } from "./http-util.js";
+import { truncateUtf16 } from "../utf16.js";
+import { HOST_EXECUTION_DIRECTIVE, HOST_MODE_DIRECTIVE, hostToolsDirective, promptFromMessages, remapHostPathToContainer, stripHostContext } from "./prompt.js";
+import { parseWorkspaceMounts } from "./workspace.js";
 import type { SerialQueue } from "./queue.js";
+import { SessionStore } from "./session-store.js";
 import { boundedDelta, chatChunk, chatDone, conversationIdSse } from "./sse.js";
 import { translateToolCall } from "./tool-bridge.js";
 
 const ID_PREFIX = "chatcmpl-";
 
-/** Total agy spawn attempts per chat request for transient eligibility-check
- * network failures (EOF on the proxy tunnel). */
+/** Total agy spawn attempts per chat request for transient startup failures
+ * (eligibility-check network EOF on the proxy tunnel, and authentication
+ * timeouts that succeed on retry — token refresh races). */
 const MAX_ELIGIBILITY_RETRIES = 3;
 /** Extra attempts for a completely empty agy response (no text at all). */
 const MAX_EMPTY_OUTPUT_RETRIES = 1;
@@ -43,6 +48,8 @@ export interface RequestMeta {
 export interface ChatContext {
   readonly deps: GatewayDeps;
   readonly queue: SerialQueue;
+  readonly sessions: SessionStore;
+  readonly toolClis: Readonly<Record<string, string>>;
   readonly defaultTimeoutSeconds: number;
   readonly maxBodyBytes: number;
   readonly log: (line: string) => void;
@@ -70,7 +77,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
     throw error;
   }
 
-  const parsed = parseChatRequest(bodyText);
+  const parsed = parseChatRequest(bodyText, ctx.toolClis);
   if (!parsed.ok) {
     ctx.meta.status = parsed.error.status;
     ctx.meta.errorMessage = parsed.error.message;
@@ -79,18 +86,71 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   }
   const chat = parsed.value;
   ctx.meta.model = chat.model;
-  ctx.meta.promptBytes = chat.prompt.length;
 
   const headerConversation = req.headers["x-agy-conversation"];
-  const conversationId =
+  const clientConversationId =
     chat.conversationId ?? (typeof headerConversation === "string" && headerConversation !== "" ? headerConversation : null);
+
+  // Incremental conversation reuse: the fingerprint covers the non-system
+  // message sequence (system is regenerated every request; injected context
+  // blocks are stripped before hashing). A prefix hit means this request is a
+  // continuation of a known agy conversation — resume it and send only the
+  // messages added since the last turn instead of the whole history.
+  const storeHit = clientConversationId === null ? ctx.sessions.lookup(chat.messages) : null;
+  const conversationId = clientConversationId ?? (storeHit === null ? null : storeHit.conversationId);
+  const nonSystemCount = chat.messages.filter((message) => message.role !== "system").length;
+  const tail = chat.messages
+    .slice(-3)
+    .map((m) => {
+      const text = typeof m.content === "string" ? m.content : String(m.content ?? "");
+      return `${m.role}[${stripHostContext(text).slice(0, 160)}]`;
+    })
+    .join(" | ");
+  if (storeHit === null) {
+    ctx.log(
+      clientConversationId === null
+        ? `session reuse: miss (full prompt, ${nonSystemCount} messages; tail: ${tail})`
+        : `session reuse: skipped (explicit conversationId; tail: ${tail})`,
+    );
+  } else {
+    ctx.log(
+      `session reuse: hit conversation=${storeHit.conversationId} seen=${storeHit.seenCount} of ${nonSystemCount} messages; sending ${Math.max(0, nonSystemCount - storeHit.seenCount)} new (tail: ${tail})`,
+    );
+  }
+
+  let prompt = chat.prompt;
+  if (storeHit !== null) {
+    const nonSystemIndexes: number[] = [];
+    chat.messages.forEach((message, index) => {
+      if (message.role !== "system") {
+        nonSystemIndexes.push(index);
+      }
+    });
+    const startIndex = nonSystemIndexes[storeHit.seenCount];
+    if (startIndex !== undefined) {
+      const hostTools = hostToolsDirective(chat.tools, ctx.toolClis);
+      prompt =
+        `${HOST_EXECUTION_DIRECTIVE}\n\n` +
+        `${hostTools === "" ? "" : `${hostTools}\n\n`}` +
+        promptFromMessages(chat.messages.slice(startIndex));
+    }
+  }
+  const workspaceMounts = parseWorkspaceMounts(ctx.deps.env);
+  if (workspaceMounts.length === 0) {
+    prompt = prompt.replace(HOST_EXECUTION_DIRECTIVE, HOST_MODE_DIRECTIVE);
+  }
+  prompt = remapHostPathToContainer(prompt, workspaceMounts);
+  ctx.meta.promptBytes = prompt.length;
+  ctx.log(
+    `prompt framing: head=${JSON.stringify(prompt.slice(0, 240))} tail=${JSON.stringify(prompt.slice(-240))}`,
+  );
 
   const timeoutSeconds = chat.timeoutSeconds ?? ctx.defaultTimeoutSeconds;
 
   let argv: readonly string[];
   try {
     argv = buildArgv({
-      task: chat.prompt,
+      task: prompt,
       viaStdin: true,
       mode: chat.mode,
       timeoutSeconds,
@@ -134,7 +194,6 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   const model = chat.model;
   const capChars = chat.maxTokens === null ? null : chat.maxTokens * 4;
   const streamSteps = ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] === "1" || ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] === "true";
-  const workspaceHostPath = ctx.deps.env["AGY_GATEWAY_WORKSPACE"] ?? null;
   const streamingStarted = { value: false };
   let accumulated = "";
   let bridgedToolCallEmitted = false;
@@ -179,7 +238,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             if (signal.aborted || !chat.stream || !streamSteps) {
               return;
             }
-            const translated = translateToolCall(info.toolName, info.inputJson, workspaceHostPath);
+            const translated = translateToolCall(info.toolName, info.inputJson, workspaceMounts);
             if (translated === null) {
               return;
             }
@@ -207,7 +266,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             cwd: ctx.deps.cwd,
             env: ctx.deps.env,
             signal,
-            stdin: chat.prompt,
+            stdin: prompt,
             hostTimeoutMs: timeoutSeconds * 1000 + HOST_GRACE_MS,
             onStdoutChunk: (chunk) => parser.push(chunk),
           });
@@ -216,15 +275,16 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
         }
         const outcome = parser.finish();
         if (outcome.kind === "failure") {
-          const eligibilityFailure =
+          const transientStartupFailure =
             outcome.reason.type === "status" &&
             outcome.reason.error !== null &&
-            outcome.reason.error.includes("Eligibility check failed");
+            (outcome.reason.error.includes("Eligibility check failed") ||
+              outcome.reason.error.includes("authentication failed or timed out"));
           const emptyOutput = outcome.reason.type === "empty-output";
           if (!emitted && !signal.aborted) {
-            if (eligibilityFailure && eligibilityAttempts < MAX_ELIGIBILITY_RETRIES - 1) {
+            if (transientStartupFailure && eligibilityAttempts < MAX_ELIGIBILITY_RETRIES - 1) {
               eligibilityAttempts += 1;
-              ctx.log(`agy eligibility check failed on attempt ${attempt} of ${MAX_ELIGIBILITY_RETRIES}; retrying`);
+              ctx.log(`agy startup check failed on attempt ${attempt} of ${MAX_ELIGIBILITY_RETRIES}; retrying`);
               continue;
             }
             if (emptyOutput && emptyAttempts < MAX_EMPTY_OUTPUT_RETRIES) {
@@ -246,7 +306,10 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
           );
         }
         ctx.meta.status = 200;
-        const finalText = capChars === null ? outcome.text : outcome.text.slice(0, capChars);
+        if (outcome.conversationId !== null) {
+          ctx.sessions.record(chat.messages, outcome.conversationId);
+        }
+        const finalText = capChars === null ? outcome.text : truncateUtf16(outcome.text, capChars);
         if (chat.stream) {
           res.write(chatChunk(id, created, model, {}, "stop"));
           if (outcome.conversationId !== null) {

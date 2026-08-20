@@ -33,8 +33,22 @@ function failureMessage(outcome: ParserOutcome & { readonly kind: "failure" }, c
   }
 }
 
+function failureStatus(outcome: ParserOutcome & { readonly kind: "failure" }): number {
+  if (outcome.reason.type === "status") {
+    const err = outcome.reason.error;
+    if (err !== null) {
+      const lower = err.toLowerCase();
+      if (lower.includes("high traffic") || lower.includes("rate limit") || lower.includes("try again")) {
+        return 429;
+      }
+    }
+  }
+  return 500;
+}
+
 export function outcomeFailureError(outcome: ParserOutcome & { readonly kind: "failure" }, cwd: string): GatewayHttpError {
-  return new GatewayHttpError(500, "upstream_error", "server_error", failureMessage(outcome, cwd));
+  const status = failureStatus(outcome);
+  return new GatewayHttpError(status, status === 429 ? 429 : "upstream_error", "server_error", failureMessage(outcome, cwd));
 }
 
 export function mapRunError(error: unknown, cwd: string): GatewayHttpError | null {

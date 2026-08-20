@@ -4,6 +4,7 @@
  * builders: JSON escaping is delegated to JSON.stringify; content never leaves
  * as raw free text.
  */
+import { truncateUtf16 } from "../utf16.js";
 
 export function sseData(payload: Readonly<Record<string, unknown>>): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
@@ -61,6 +62,6 @@ export function boundedDelta(accumulated: string, delta: string, capChars: numbe
   if (delta.length <= remaining) {
     return { accumulated: `${accumulated}${delta}`, emitted: delta, reached: false };
   }
-  const emitted = delta.slice(0, remaining);
+  const emitted = truncateUtf16(delta, remaining);
   return { accumulated: `${accumulated}${emitted}`, emitted, reached: true };
 }
