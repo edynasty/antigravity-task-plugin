@@ -23,6 +23,9 @@ services:
       AGY_GATEWAY_MAX_QUEUE: ${AGY_GATEWAY_MAX_QUEUE:-8}
       AGY_GATEWAY_TIMEOUT_S: ${AGY_GATEWAY_TIMEOUT_S:-300}
       AGY_GATEWAY_MODELS_TTL_S: ${AGY_GATEWAY_MODELS_TTL_S:-3600}
+      # Bridge agy tool steps to host tool names and emit them as tool_calls;
+      # set to 0/false to emit only model text.
+      AGY_GATEWAY_STREAM_STEPS: ${AGY_GATEWAY_STREAM_STEPS:-1}
       # Host path of the directory bind-mounted at /workspace. The gateway uses
       # it to rewrite container paths (/workspace/...) to host paths in bridged
       # tool calls, so the host executes against the real project.
