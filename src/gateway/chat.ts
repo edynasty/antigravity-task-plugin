@@ -21,6 +21,7 @@ import { GatewayHttpError } from "./errors.js";
 import { readRequestBody, sendJson, sendJsonError } from "./http-util.js";
 import type { SerialQueue } from "./queue.js";
 import { boundedDelta, chatChunk, chatDone, conversationIdSse } from "./sse.js";
+import { translateToolCall } from "./tool-bridge.js";
 
 const ID_PREFIX = "chatcmpl-";
 
@@ -133,8 +134,10 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
   const model = chat.model;
   const capChars = chat.maxTokens === null ? null : chat.maxTokens * 4;
   const streamSteps = ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] === "1" || ctx.deps.env["AGY_GATEWAY_STREAM_STEPS"] === "true";
+  const workspaceHostPath = ctx.deps.env["AGY_GATEWAY_WORKSPACE"] ?? null;
   const streamingStarted = { value: false };
   let accumulated = "";
+  let bridgedToolCallEmitted = false;
 
   try {
     await ctx.queue.push({
@@ -158,6 +161,13 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             if (snapshot.event !== "step_update" || signal.aborted || snapshot.textDelta === null) {
               return;
             }
+            if (bridgedToolCallEmitted) {
+              // agy executed a bridged tool inside the container; the host
+              // mirrors that call and its result comes back in the next
+              // request. Suppress agy's own text so the final answer is
+              // produced from the host-executed result, not the container one.
+              return;
+            }
             const capped = boundedDelta(accumulated, snapshot.textDelta, capChars);
             accumulated = capped.accumulated;
             if (chat.stream && capped.emitted !== "") {
@@ -169,6 +179,11 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
             if (signal.aborted || !chat.stream || !streamSteps) {
               return;
             }
+            const translated = translateToolCall(info.toolName, info.inputJson, workspaceHostPath);
+            if (translated === null) {
+              return;
+            }
+            bridgedToolCallEmitted = true;
             emitted = true;
             const toolCallId = `${ID_PREFIX}${randomBytes(8).toString("hex")}`;
             res.write(
@@ -178,7 +193,7 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx:
                     index: 0,
                     id: toolCallId,
                     type: "function",
-                    function: { name: info.toolName, arguments: info.inputJson },
+                    function: { name: translated.name, arguments: translated.arguments },
                   },
                 ],
               }, null),

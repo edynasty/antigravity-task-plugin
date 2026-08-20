@@ -439,7 +439,8 @@ AGY_GATEWAY_HOST=127.0.0.1 AGY_GATEWAY_PORT=8787 node dist/gateway/cli.js
 | `AGY_GATEWAY_MODELS_TTL_S` | `3600` | `agy models` cache TTL |
 | `AGY_GATEWAY_CACHE_DIR` | `~/.agy-gateway` | Model cache directory |
 | `AGY_GATEWAY_CWD` | process cwd | agy's working directory (agent-mode runs operate relative to it) |
-| `AGY_GATEWAY_STREAM_STEPS` | `1` | Stream agy tool steps as OpenAI `tool_calls` deltas (rendered as tool-call cards by the AI SDK) so clients show activity during tool phases; set `0` or `false` to emit only model text |
+ | `AGY_GATEWAY_STREAM_STEPS` | `1` | Stream agy tool steps as OpenAI `tool_calls` deltas, bridged onto host tool names (`run_command`→`bash`, `view_file`→`read`) so clients can actually execute them; set `0` or `false` to emit only model text |
+ | `AGY_GATEWAY_WORKSPACE` | (see below) | Host path of the directory mounted at `/workspace`; the gateway rewrites container paths (`/workspace/...`) to this host path in bridged tool calls |
 
 **Serial queue**: at most ONE agy task runs at a time (ban avoidance). Concurrent requests wait
 FIFO; a client disconnect removes its queued job.
@@ -525,9 +526,12 @@ process and only happen before any stream content was emitted to the client.
 
 `stream=true` (default): SSE chunks shaped as OpenAI `chat.completion.chunk` objects, one per
 agy `step_update.text_delta`, then a `finish_reason:"stop"` chunk and `data: [DONE]`. Tool
-steps stream as OpenAI `tool_calls` deltas (one per tool step, name + bounded JSON
-arguments) so clients like the AI SDK render tool-call cards; disable via
-`AGY_GATEWAY_STREAM_STEPS=0`.
+steps stream as OpenAI `tool_calls` deltas bridged onto the client's tool names
+(`run_command`→`bash`, `view_file`→`read`; arguments and container `/workspace` paths are
+rewritten to the host path) so the client can execute them; when a bridged tool call is
+emitted, agy's own text for that run is suppressed — the host executes the tool and the
+result comes back as a `<tool>` block in the next request, which is how the final answer is
+produced. Disable bridging entirely via `AGY_GATEWAY_STREAM_STEPS=0`.
 The conversation id rides in an SSE **comment line** (`: conversation_id=<id>`), which strict
 OpenAI clients ignore — it is never emitted as a `data:` payload, because clients such as the
 AI SDK reject non-standard `data:` JSON. Streaming headers are written when the agy run
@@ -553,11 +557,12 @@ parses one model per line (first token = slug), and caches the result in
 
 ### Out of scope (documented, not implemented)
 
-Interactive permission flows, model name mapping/aliasing, request-side OpenAI `tool_calls`
-execution (agy tools are streamed as `tool_calls` deltas for visibility, but client tool
-execution is not wired back), multi-user auth, and image content (image parts are dropped,
-never sent to agy). The request `model` is passed verbatim to `--model`; agy validates it,
-and an invalid model surfaces as a 500 with the (credential-redacted) agy detail.
+Interactive permission flows, model name mapping/aliasing, bridging of every agy tool
+(currently only `run_command`/`run_command_with_output`→`bash` and
+`view_file`/`view_directory`→`read` are bridged; other agy tools are not emitted to the
+client), multi-user auth, and image content (image parts are dropped, never sent to agy).
+The request `model` is passed verbatim to `--model`; agy validates it, and an invalid model
+surfaces as a 500 with the (credential-redacted) agy detail.
 
 ### Docker deployment
 
@@ -641,9 +646,13 @@ What compose mounts:
 - `${HOME}/.gemini` → `/root/.gemini` — the **host's agy login state** (OAuth
   credentials, settings, caches); the container reuses your existing
   subscription, so `agy login` is never needed inside the container.
-- `${PWD:-.}/workspace` → `/workspace` — agy's working directory; **agy agent
-  mode (`accept-edits`) may create or modify files here**, review it like any
-  other workspace.
+- `${AGY_GATEWAY_WORKSPACE:-${PWD:-.}/workspace}` → `/workspace` — agy's working
+  directory; **agy agent mode (`accept-edits`) may create or modify files here**,
+  review it like any other workspace. Set `AGY_GATEWAY_WORKSPACE` to a host
+  project path (e.g. `$PWD`) to bind-mount the project itself: agy can then
+  read real project files and its bridged tool calls (`run_command`→`bash`,
+  `view_file`→`read`) are rewritten to that host path, so the host executes
+  against the same project.
 
 Compose passes `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` through from the host
 environment (empty by default). Docker containers do **not** inherit the host

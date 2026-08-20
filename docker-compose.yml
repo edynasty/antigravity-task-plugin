@@ -23,6 +23,10 @@ services:
       AGY_GATEWAY_MAX_QUEUE: ${AGY_GATEWAY_MAX_QUEUE:-8}
       AGY_GATEWAY_TIMEOUT_S: ${AGY_GATEWAY_TIMEOUT_S:-300}
       AGY_GATEWAY_MODELS_TTL_S: ${AGY_GATEWAY_MODELS_TTL_S:-3600}
+      # Host path of the directory bind-mounted at /workspace. The gateway uses
+      # it to rewrite container paths (/workspace/...) to host paths in bridged
+      # tool calls, so the host executes against the real project.
+      AGY_GATEWAY_WORKSPACE: ${AGY_GATEWAY_WORKSPACE:-${PWD:-.}/workspace}
       # Proxy passthrough: agy's eligibility check and model requests need to
       # reach Google; behind GFW-style networks the container MUST inherit the
       # host proxy (docker containers do NOT get it automatically). The
@@ -41,5 +45,7 @@ services:
       # container reuses the host subscription, so `agy login` is never needed.
       - ${HOME:-~}/.gemini:/root/.gemini
       # agy agent-mode (accept-edits) working directory — what agy may modify.
-      - ${PWD:-.}/workspace:/workspace
+      # Defaults to a dedicated ./workspace dir; set AGY_GATEWAY_WORKSPACE to
+      # bind-mount the host project itself (e.g. $PWD) for bridged reads.
+      - ${AGY_GATEWAY_WORKSPACE:-${PWD:-.}/workspace}:/workspace
     restart: unless-stopped

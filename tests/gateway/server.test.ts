@@ -263,10 +263,12 @@ describe("POST /v1/chat/completions streaming", () => {
     const delta = (toolChunk?.["choices"] as Array<Record<string, unknown>>)[0]?.["delta"] as Record<string, unknown>;
     const toolCall = (delta["tool_calls"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
     expect(toolCall["type"]).toBe("function");
-    expect((toolCall["function"] as Record<string, unknown>)["name"]).toBe("run_command");
-    expect((toolCall["function"] as Record<string, unknown>)["arguments"]).toBe('{"CommandLine":"git status"}');
+    expect((toolCall["function"] as Record<string, unknown>)["name"]).toBe("bash");
+    expect((toolCall["function"] as Record<string, unknown>)["arguments"]).toBe('{"command":"git status"}');
     expect(text).not.toContain("[agy:");
-    expect(text).toContain("result text. ");
+    // The bridged tool call is mirrored by the host; agy's own text is
+    // suppressed so the final answer is produced from the host result.
+    expect(text).not.toContain("result text. ");
   });
 
   test("tool step activity is disabled by default (no tool_calls emitted)", async () => {

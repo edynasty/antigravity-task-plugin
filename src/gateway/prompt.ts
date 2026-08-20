@@ -94,15 +94,15 @@ export function parsePrompt(value: unknown): PromptParse {
   return { ok: true, messages, prompt };
 }
 
-/** Tells agy to stay a pure reasoner: it runs inside a container with no
- * filesystem access, so any tool it tries to execute (run_command etc.) fails
- * against the user's project. The host (OpenCode) executes tools and feeds the
- * results back as <tool> blocks in later turns. */
+/** Tells agy how the bridge works: the container mounts the user's project at
+ * /workspace so reads succeed, its tool calls are mirrored on the host, and
+ * side-effecting changes are only ever made by the host (never in the
+ * container, where they would be duplicated and diverge). */
 export const HOST_EXECUTION_DIRECTIVE =
-  "You are running in an isolated sandbox without access to the user's files, commands or network.\n" +
-  "Do NOT use any tools, read files, or run commands yourself - they will fail or touch the wrong environment.\n" +
-  "The host executes tools on your behalf and includes their results in later messages as <tool> blocks.\n" +
-  "If you need file contents or command output, describe what the host should run; do not attempt it yourself.";
+  "You are running inside a container with the user's project mounted at /workspace.\n" +
+  "You MAY read files and run read-only commands there - they operate on the real project.\n" +
+  "Your tool calls are also executed on the host and their results are fed back to you as <tool> blocks.\n" +
+  "Never modify files or run commands with side effects: changes must only be made by the host.";
 
 function toolsToPrompt(tools: unknown): string {
   if (!Array.isArray(tools)) {
